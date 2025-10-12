@@ -1,6 +1,6 @@
 # Ignore environment and virtualenv
-.env
-.venv/
+SigilHive/.env
+SigilHive/.venv/
 
 # Recommended additional ignores
 __pycache__/

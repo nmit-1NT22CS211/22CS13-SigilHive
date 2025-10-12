@@ -1,0 +1,9 @@
+# Ignore environment and virtualenv
+.env
+.venv/
+
+# Recommended additional ignores
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/

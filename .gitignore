@@ -1,5 +1,5 @@
 # Ignore environment and virtualenv
-SigilHive/.env
+.env
 SigilHive/.venv/
 
 # Recommended additional ignores

@@ -1,18 +1,16 @@
 # ssh_server.py
-# Minimal asyncssh-based honeypot server that awaits async controller responses (LLM-driven).
 import asyncio
 import asyncssh
 import os
 import time
 import uuid
 from datetime import datetime, timezone
-from controller import Controller
+from controller import Controller, SHOPHUB_STRUCTURE
 
 HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", "2222"))
 
-# Instantiate the async controller (uses llm_gen internally)
-controller = Controller(persona="ubuntu-22.04")
+controller = Controller(persona="shophub-production-server")
 
 
 class HoneypotSession(asyncssh.SSHServerSession):
@@ -24,41 +22,105 @@ class HoneypotSession(asyncssh.SSHServerSession):
         self.start_time = time.time()
         self.cmd_count = 0
         self._closed = False
-        self.current_dir = "~"  # Track current directory
+        self.current_dir = "~"
+        self.username = "shophub"
+        self.hostname = "shophub-prod-01"
 
     def connection_made(self, chan):
-        # channel object set by asyncssh when session starts
         self._chan = chan
-        print(f"[honeypot][{self.session_id}] connection_made called")
-        # Send initial banner and prompt
+        print(f"[honeypot][{self.session_id}] connection established")
         try:
-            self._chan.write("Welcome to Ubuntu 22.04 LTS\n")
+            # Send ShopHub banner (ensure string)
+            banner = f"""
+╔═══════════════════════════════════════════════════════════╗
+║         Welcome to ShopHub Production Server              ║
+║                                                           ║
+║  WARNING: Unauthorized access is strictly prohibited      ║
+║  All activities are monitored and logged                  ║
+╚═══════════════════════════════════════════════════════════╝
+
+ShopHub v2.3.1 - E-commerce Platform
+Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
+
+"""
+            # Write banner and then prompt. Use str(...) to be robust.
+            self._chan.write(str(banner))
+            # tiny newline to reduce chance of prompt-appending artifacts
+            self._chan.write("\r\n")
             self._write_prompt()
-            print(f"[honeypot][{self.session_id}] banner and prompt sent")
         except Exception as e:
             print(f"[honeypot][{self.session_id}] error in connection_made: {e}")
-            import traceback
-
-            traceback.print_exc()
 
     def _write_prompt(self):
-        """Write the shell prompt based on current directory"""
+        """Write a realistic shell prompt"""
         if self._chan and not self._closed:
             try:
-                prompt = f"user@honeypot:{self.current_dir}$ "
-                self._chan.write(prompt)
+                # Color codes for realistic prompt
+                prompt = f"\033[32m{self.username}@{self.hostname}\033[0m:\033[34m{self.current_dir}\033[0m$ "
+                self._chan.write(str(prompt))
             except Exception as e:
                 print(f"[honeypot][{self.session_id}] error in _write_prompt: {e}")
 
+    def _normalize_path(self, path: str) -> str:
+        """Normalize a path relative to current directory"""
+        if path.startswith("/"):
+            # Absolute path - check if it's valid
+            if path == "/":
+                return "/"
+            # For simplicity, treat /home/shophub as ~
+            if path.startswith("/home/shophub"):
+                return path.replace("/home/shophub", "~")
+            return path
+        elif path.startswith("~"):
+            return path
+        elif path == ".":
+            return self.current_dir
+        elif path == "..":
+            return self._get_parent_dir(self.current_dir)
+        else:
+            # Relative path
+            if self.current_dir == "~":
+                return f"~/{path}"
+            elif self.current_dir.endswith("/"):
+                return f"{self.current_dir}{path}"
+            else:
+                return f"{self.current_dir}/{path}"
+
+    def _get_parent_dir(self, path: str) -> str:
+        """Get parent directory of given path"""
+        if path == "~" or path == "/" or path == "/home/shophub":
+            return "~"
+
+        # Remove trailing slash
+        path = path.rstrip("/")
+
+        # Handle ~/ prefix
+        if path.startswith("~/"):
+            parts = path[2:].split("/")
+            if len(parts) <= 1:
+                return "~"
+            return "~/" + "/".join(parts[:-1])
+
+        # Handle absolute paths
+        if path.startswith("/"):
+            parts = path[1:].split("/")
+            if len(parts) <= 1:
+                return "/"
+            return "/" + "/".join(parts[:-1])
+
+        return "~"
+
+    def _directory_exists(self, path: str) -> bool:
+        """Check if a directory exists in our structure"""
+        normalized = self._normalize_path(path)
+        return normalized in SHOPHUB_STRUCTURE
+
     def data_received(self, data, datatype):
-        """
-        Called by asyncssh when data arrives. This method must not be async, so we
-        schedule the async handler with asyncio.create_task.
-        """
+        """Handle incoming data from SSH client"""
+        # asyncssh in text mode will send strings; keep accumulating them
         self._input += data
-        # Process full lines (commands) terminated by newline or carriage return
+
         while "\n" in self._input or "\r" in self._input:
-            # Handle both \n and \r\n
             if "\r\n" in self._input:
                 line, self._input = self._input.split("\r\n", 1)
             elif "\n" in self._input:
@@ -69,16 +131,17 @@ class HoneypotSession(asyncssh.SSHServerSession):
                 break
 
             cmd = line.strip()
-            # Handle exit/logout commands
+
+            # Handle exit commands
             if cmd.lower() in ("exit", "logout", "quit"):
                 try:
-                    self._chan.write("\nGoodbye!\n")
+                    self._chan.write("\nGoodbye from ShopHub!\n")
                     self._chan.exit(0)
                 except Exception:
                     pass
                 return
 
-            # ignore empty lines but show prompt
+            # Handle empty input
             if cmd == "":
                 try:
                     self._write_prompt()
@@ -86,17 +149,33 @@ class HoneypotSession(asyncssh.SSHServerSession):
                     pass
                 continue
 
-            # Handle cd command specially to update directory state
+            # Handle cd command locally for immediate feedback
             if cmd.startswith("cd ") or cmd == "cd":
                 self._handle_cd_command(cmd)
                 continue
 
+            # Handle ls with directory argument
+            if cmd.startswith("ls "):
+                parts = cmd.split(maxsplit=1)
+                if len(parts) > 1:
+                    target = parts[1].strip()
+                    # Check if target exists
+                    target_path = self._normalize_path(target)
+                    if not self._directory_exists(target_path):
+                        try:
+                            self._chan.write(
+                                f"ls: cannot access '{target}': No such file or directory\n"
+                            )
+                            self._write_prompt()
+                        except Exception:
+                            pass
+                        continue
+
             self.cmd_count += 1
-            # schedule an async handler so event loop remains responsive
             asyncio.create_task(self.handle_command(cmd))
 
     def _handle_cd_command(self, cmd: str):
-        """Handle cd command to update current directory"""
+        """Handle cd command with validation"""
         parts = cmd.split(maxsplit=1)
 
         if len(parts) == 1 or (len(parts) > 1 and parts[1] == "~"):
@@ -104,55 +183,44 @@ class HoneypotSession(asyncssh.SSHServerSession):
             self.current_dir = "~"
         elif len(parts) > 1 and parts[1] == "..":
             # cd .. goes up one directory
-            if self.current_dir == "~" or self.current_dir == "/":
-                # Already at home or root, stay there
-                pass
-            elif self.current_dir.startswith("~/"):
-                # Handle ~/something format
-                parts_dir = self.current_dir[2:].split("/")  # Remove ~/ prefix
-                if len(parts_dir) == 1:
-                    # Only one level deep (e.g., ~/Desktop), go back to ~
-                    self.current_dir = "~"
-                else:
-                    # Multiple levels, go up one
-                    self.current_dir = "~/" + "/".join(parts_dir[:-1])
-            elif "/" in self.current_dir:
-                # Absolute path
-                parts_dir = self.current_dir.split("/")
-                if len(parts_dir) <= 2:
-                    # At root level
-                    self.current_dir = "/"
-                else:
-                    self.current_dir = "/".join(parts_dir[:-1])
-            else:
-                # Shouldn't happen, but go to home as fallback
-                self.current_dir = "~"
+            self.current_dir = self._get_parent_dir(self.current_dir)
+        elif len(parts) > 1 and parts[1] == ".":
+            # cd . stays in current directory
+            pass
         elif len(parts) > 1 and parts[1] == "/":
-            # cd / goes to root
-            self.current_dir = "/"
-        elif len(parts) > 1 and parts[1].startswith("/"):
-            # Absolute path
-            self.current_dir = parts[1]
-        elif len(parts) > 1:
-            # Relative path - append to current dir
-            if self.current_dir == "~":
-                self.current_dir = f"~/{parts[1]}"
-            elif self.current_dir == "/":
-                self.current_dir = f"/{parts[1]}"
+            # cd / goes to root (but we redirect to home for this app)
+            self.current_dir = "~"
+        else:
+            # Check if target directory exists
+            target_path = self._normalize_path(parts[1])
+            if self._directory_exists(target_path):
+                self.current_dir = target_path
             else:
-                self.current_dir = f"{self.current_dir}/{parts[1]}"
+                # Directory doesn't exist
+                try:
+                    self._chan.write(
+                        f"bash: cd: {parts[1]}: No such file or directory\n"
+                    )
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        self._write_prompt()
+                    except Exception:
+                        pass
+                    return
 
-        # Log the directory change
-        print(f"[honeypot][{self.session_id}] cd: {self.current_dir}")
+        # Log directory change
+        print(f"[honeypot][{self.session_id}] cd -> {self.current_dir}")
+
+        # Write new prompt
+        try:
+            self._write_prompt()
+        except Exception as e:
+            print(f"[honeypot][{self.session_id}] error writing prompt after cd: {e}")
 
     async def handle_command(self, cmd: str):
-        """
-        Async handler that:
-        - builds an event
-        - awaits controller.get_action_for_session(...) which returns LLM-generated response
-        - sleeps for the returned delay (to simulate system behavior)
-        - writes the response to the SSH channel
-        """
+        """Handle commands asynchronously with local validation + LLM"""
         if self._closed or not self._chan:
             return
 
@@ -160,42 +228,73 @@ class HoneypotSession(asyncssh.SSHServerSession):
             "session_id": self.session_id,
             "type": "command",
             "command": cmd,
+            "current_dir": self.current_dir,
             "ts": datetime.now(timezone.utc).isoformat(),
             "cmd_count": self.cmd_count,
             "elapsed": time.time() - self.start_time,
         }
 
-        try:
-            # Ask controller for an action (this is async and may call LLM)
-            action = await controller.get_action_for_session(self.session_id, event)
-        except Exception as e:
-            # If LLM/controller fails, return a safe fallback message
-            print(f"[honeypot][{self.session_id}] controller error: {e}")
-            action = {"response": f"bash: {cmd}: command not found", "delay": 0.05}
-
-        # Insert a small delay if controller requested it
-        delay = float(action.get("delay", 0.0) or 0.0)
-        try:
-            if delay > 0:
-                await asyncio.sleep(delay)
-        except asyncio.CancelledError:
+        # ------------- LOCAL VALIDATION -------------
+        tokens = cmd.split()
+        if not tokens:
+            self._write_prompt()
             return
 
+        base = tokens[0]
+        args = tokens[1:]
+
+        # Simulate realistic file existence in current directory
+        files_in_dir = SHOPHUB_STRUCTURE.get(self.current_dir, [])
+        valid_names = [f for f in files_in_dir if "." in f]
+
+        # cat command validation
+        if base == "cat" and args:
+            target = args[0]
+            if target not in valid_names:
+                # Typo or non-existent file (like database,js)
+                self._chan.write(f"cat: {target}: No such file or directory\n")
+                self._write_prompt()
+                return
+
+        # ls command with invalid directory
+        if base == "ls" and args:
+            target = args[0]
+            if not self._directory_exists(self._normalize_path(target)):
+                self._chan.write(
+                    f"ls: cannot access '{target}': No such file or directory\n"
+                )
+                self._write_prompt()
+                return
+
+        # ---------------------------------------------------
+
+        try:
+            action = await controller.get_action_for_session(self.session_id, event)
+        except Exception as e:
+            print(f"[honeypot][{self.session_id}] controller error: {e}")
+            action = {
+                "response": f"bash: {base}: command not found",
+                "delay": 0.05,
+            }
+
+        delay = float(action.get("delay", 0.0) or 0.0)
+        if delay > 0:
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+
         response_text = action.get("response", "")
-        if response_text is None:
+        if not response_text:
             response_text = ""
 
-        # Write response safely to the channel
         try:
-            # Write the response
-            if response_text:
-                self._chan.write(response_text)
-                if not response_text.endswith("\n"):
-                    self._chan.write("\n")
-            # Show prompt again with current directory
+            self._chan.write(str(response_text))
+            if not str(response_text).endswith("\n"):
+                self._chan.write("\n")
             self._write_prompt()
         except (BrokenPipeError, EOFError, asyncssh.Error) as e:
-            print(f"[honeypot][{self.session_id}] write error (channel closed): {e}")
+            print(f"[honeypot][{self.session_id}] write error (connection closed): {e}")
             self._closed = True
 
     def eof_received(self):
@@ -203,118 +302,133 @@ class HoneypotSession(asyncssh.SSHServerSession):
         return True
 
     def break_received(self, msec):
-        # Handle Ctrl+C
-        print(f"[honeypot][{self.session_id}] break received")
+        print(f"[honeypot][{self.session_id}] break received (Ctrl+C)")
         return True
 
     def signal_received(self, signal):
-        # Handle signals
         print(f"[honeypot][{self.session_id}] signal received: {signal}")
         pass
 
     def session_started(self):
-        # Called when session is fully established
-        print(f"[honeypot][{self.session_id}] session_started called")
+        print(f"[honeypot][{self.session_id}] session started")
         pass
 
     def terminal_size_changed(self, width, height, pixwidth, pixheight):
-        # Handle terminal resize
-        print(f"[honeypot][{self.session_id}] terminal size: {width}x{height}")
+        print(f"[honeypot][{self.session_id}] terminal resized: {width}x{height}")
         pass
 
-    def pty_requested(self, term_type, term_size, term_modes):
-        # Accept PTY (pseudo-terminal) requests
-        print(f"[honeypot][{self.session_id}] PTY requested: {term_type}")
+    def pty_requested(self, *args, **kwargs):
+        """
+        Accept any pty_requested signature across asyncssh versions.
+        Try to unpack typical values (term, width, height) for logs.
+        """
+        try:
+            if len(args) >= 1:
+                term = args[0]
+            else:
+                term = kwargs.get("term_type", kwargs.get("term", "<unknown>"))
+            width = args[1] if len(args) >= 2 else kwargs.get("width", 80)
+            height = args[2] if len(args) >= 3 else kwargs.get("height", 24)
+            print(
+                f"[honeypot][{self.session_id}] pty requested: term={term}, size={width}x{height}"
+            )
+        except Exception:
+            # be defensive; don't let logging break the session
+            print(f"[honeypot][{self.session_id}] pty requested (could not parse args)")
+        # Always accept PTY allocation for the honeypot
         return True
 
     def shell_requested(self):
-        # This must return True to accept shell requests
-        print(f"[honeypot][{self.session_id}] shell_requested - accepting")
+        """Handle shell request from client"""
+        print(f"[honeypot][{self.session_id}] shell requested")
         return True
 
     def connection_lost(self, exc):
-        print(f"[honeypot][{self.session_id}] connection_lost: {exc}")
+        """Called when SSH connection is lost"""
         self._closed = True
+        duration = time.time() - self.start_time
+        print(f"[honeypot][{self.session_id}] connection closed after {duration:.2f}s")
+
+        if exc:
+            print(f"[honeypot][{self.session_id}] connection error: {exc}")
 
 
 class HoneypotServer(asyncssh.SSHServer):
+    """Custom SSH server class that creates sessions"""
+
     def connection_made(self, conn):
-        peer = conn.get_extra_info("peername")
-        print(f"[honeypot] connection from {peer}")
-        self._conn = conn
+        self.conn_id = str(uuid.uuid4())[:8]
+        print(
+            f"[honeypot][{self.conn_id}] new SSH connection established from {conn.get_extra_info('peername')}"
+        )
+
+    def connection_lost(self, exc):
+        if exc:
+            print(f"[honeypot][{self.conn_id}] connection error: {exc}")
+        else:
+            print(f"[honeypot][{self.conn_id}] connection closed cleanly")
 
     def begin_auth(self, username):
-        return True
+        """Begin authentication process"""
+        print(
+            f"[honeypot][{self.conn_id}] authentication attempt for user '{username}'"
+        )
+        # Returning False indicates no extra auth steps required by the server
+        return False
 
     def password_auth_supported(self):
         return True
 
     def validate_password(self, username, password):
-        print(f"[honeypot] auth attempt user={username}, pass={password}")
+        """Always accept any credentials (for honeypot realism)"""
+        print(f"[honeypot][{self.conn_id}] credentials: {username}:{password}")
         return True
 
     def session_requested(self):
-        session_id = str(uuid.uuid4())
-        print(f"[honeypot] session requested: {session_id}")
+        """When SSH client requests a session"""
+        session_id = str(uuid.uuid4())[:8]
         return HoneypotSession(session_id)
 
 
-def session_factory():
-    """Factory function that creates new session instances"""
-    session_id = str(uuid.uuid4())
-    print(f"[honeypot] creating session: {session_id}")
-    return HoneypotSession(session_id)
+def ensure_host_key(path="ssh_host_key"):
+    """Create a RSA host key file if it doesn't exist (helps first-run)."""
+    if os.path.exists(path):
+        return
+    try:
+        print("[honeypot] generating ssh host key...")
+        key = asyncssh.generate_private_key("ssh-rsa")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(key.export_private_key())
+        # write public key too
+        pub = key.export_public_key()
+        with open(path + ".pub", "w", encoding="utf-8") as f:
+            f.write(pub)
+        os.chmod(path, 0o600)
+        print("[honeypot] ssh host key generated")
+    except Exception as e:
+        print(f"[honeypot] failed to generate host key: {e}")
 
 
 async def start_server():
-    host_key_file = "ssh_host_key"
-    if not os.path.exists(host_key_file):
-        print("[honeypot] generating host key...")
-        try:
-            key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
-            key.write_private_key(host_key_file)
-            os.chmod(host_key_file, 0o600)
-        except Exception as e:
-            print(f"[honeypot] key generation error: {e}")
-            import subprocess
-
-            subprocess.run(
-                [
-                    "ssh-keygen",
-                    "-t",
-                    "rsa",
-                    "-b",
-                    "2048",
-                    "-f",
-                    host_key_file,
-                    "-N",
-                    "",
-                ],
-                check=True,
-            )
-
+    """Start the honeypot SSH server"""
+    print(f"[honeypot] starting SSH honeypot on {HOST}:{PORT} ...")
+    ensure_host_key("ssh_host_key")
     try:
+        # NOTE: removed encoding=None so asyncssh operates in normal text (str) mode.
         await asyncssh.create_server(
             HoneypotServer,
             HOST,
             PORT,
-            server_host_keys=[host_key_file],
-            allow_scp=False,
-            sftp_factory=None,
+            server_host_keys=["ssh_host_key"],
         )
-        print(f"[honeypot] SSH listening on {HOST}:{PORT}")
-        await asyncio.Future()
-    except Exception as exc:
-        print(f"[honeypot] error starting server: {exc}")
-        import traceback
-
-        traceback.print_exc()
+        print(f"[honeypot] listening on {HOST}:{PORT}")
+        await asyncio.Future()  # Run forever
+    except (OSError, asyncssh.Error) as exc:
+        print(f"[honeypot] server failed to start: {exc}")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(start_server())
-    except KeyboardInterrupt:
-        print("\n[honeypot] exiting on user interrupt")
-    except Exception as e:
-        print(f"[honeypot] runtime error: {e}")
+    except (KeyboardInterrupt, SystemExit):
+        print("\n[honeypot] shutting down gracefully...")

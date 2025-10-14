@@ -6,7 +6,6 @@ import time
 from dotenv import load_dotenv
 import asyncio
 
-# LangChain Google Generative AI wrapper
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import HumanMessage
 
@@ -19,7 +18,6 @@ if not GEMINI_KEY:
 CACHE_PATH = "llm_cache.json"
 _cache = {}
 
-# load cache on import
 try:
     if os.path.exists(CACHE_PATH):
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
@@ -42,27 +40,29 @@ def _cache_key(prefix: str, key: str) -> str:
     return f"{prefix}:{h}"
 
 
-# Basic sanitizer to redact dangerous substrings
 _BANNED_SUBSTRS = [
     "rm -rf",
-    "sudo ",
     "dd if=",
-    "curl ",
-    "wget ",
-    "nc ",
-    "ncat ",
+    "mkfs",
+    ":(){:|:&};:",  # fork bomb
+    "curl http://malicious",
+    "wget http://malicious",
+    "nc -e",
+    "ncat -e",
     "sshpass",
-    "exploit",
     "metasploit",
     "chmod 777",
-    "password",
-    "passwd",
-    "PRIVATE KEY",
-    "api_key",
-    "secret",
-    "SECRET_KEY",
-    "SECRET",
-    "PRIVATE_KEY",
+    "chmod 666",
+    "PRIVATE KEY-----",
+    "BEGIN RSA PRIVATE KEY",
+    "BEGIN OPENSSH PRIVATE KEY",
+    "api_key=",
+    "API_KEY=",
+    "SECRET_KEY=",
+    "password=",
+    "PASSWORD=",
+    "sk_live_",
+    "sk_test_",
 ]
 
 
@@ -72,61 +72,91 @@ def sanitize(text: str) -> str:
     out = text
     for b in _BANNED_SUBSTRS:
         out = out.replace(b, "[REDACTED]")
-    # extra safety: limit length
     if len(out) > 8000:
         out = out[:8000] + "\n...[truncated]"
     return out
 
 
-def _build_prompt(command: str, filename_hint: str = None, persona: str = None) -> str:
+def _build_prompt(
+    command: str, filename_hint: str = None, persona: str = None, context: dict = None
+) -> str:
     """
-    Build a safety-first prompt that instructs Gemini to generate *only* simulated outputs,
-    never any secrets, commands, or instructions for misuse.
+    Build a context-aware prompt that helps the LLM generate realistic outputs
+    based on the current directory and application structure.
     """
     persona_line = (
-        f"You are simulating the text output of a UNIX system (persona: {persona})."
+        f"You are simulating terminal output for a {persona} system."
         if persona
-        else "You are simulating the text output of a UNIX-like system."
+        else "You are simulating terminal output for a Linux server."
     )
-    file_line = f"Target filename hint: {filename_hint}." if filename_hint else ""
-    prompt = (
-        f"{persona_line}\n"
-        f"{file_line}\n"
-        "IMPORTANT SAFETY RULES (must obey):\n"
-        "1) Produce only harmless simulated output (file contents, command output, or banners).\n"
-        "2) DO NOT include real passwords, private keys, API keys, exploit commands, or step-by-step instructions.\n"
-        "3) DO NOT include runnable shell commands or instructions (no code that attackers could copy to exploit systems).\n"
-        "4) Keep output plausible and concise. If generating a file, make it look like a README, config snippet, or benign log.\n"
-        "5) If asked to simulate network commands (ping/curl/ssh), simulate plausible-looking output; DO NOT perform any network access.\n\n"
-        f"User asked to run: `{command}`\n\n"
-        "Produce ONLY the simulated command output or file content — nothing else (no commentary, no analysis).\n"
-    )
+
+    # Build context information
+    context_info = ""
+    if context:
+        current_dir = context.get("current_directory", "~")
+        dir_desc = context.get("directory_description", "")
+        dir_contents = context.get("directory_contents", [])
+        app_name = context.get("application", "")
+        tech_stack = context.get("application_tech", "")
+
+        context_info = f"""
+CURRENT CONTEXT:
+- Current Directory: {current_dir}
+- Directory Description: {dir_desc}
+- Directory Contains: {", ".join(dir_contents) if dir_contents else "empty"}
+- Application: {app_name}
+- Tech Stack: {tech_stack}
+"""
+
+    file_info = f"Target file: {filename_hint}" if filename_hint else ""
+
+    prompt = f"""{persona_line}
+
+{context_info}
+
+CRITICAL SAFETY RULES:
+1) Generate ONLY realistic terminal output (command results, file contents, or directory listings)
+2) NEVER include real passwords, private keys, API keys, or sensitive credentials
+3) NEVER include executable exploit code or malicious commands
+4) For authentication tokens/keys in files, use placeholder values like [REDACTED], <your-key-here>, or dummy values
+5) Make outputs contextually appropriate for the current directory and application
+6) Keep outputs realistic and consistent with an e-commerce platform environment
+
+CONTEXTUAL GUIDELINES:
+- If in application directories, show relevant code snippets, configs, or logs
+- If listing directories (ls), show contents that match the current directory context
+- If reading files (cat), generate appropriate file content based on filename and location
+- For logs, show realistic ecommerce application logs (orders, payments, user actions)
+- For code files, show relevant Node.js/Express code snippets
+- For config files, show configurations with redacted sensitive values
+- For database files, show schema or sample data (no real user data)
+
+Command to simulate: `{command}`
+{file_info}
+
+Generate ONLY the terminal output - no explanations, no commentary, no markdown formatting.
+Just the raw output as it would appear in a real terminal.
+"""
     return prompt
 
 
 def _get_llm_client():
-    # instantiate the LangChain Gemini wrapper
-    # Using model "gemini-1.5-pro" as example; change if not available for your key
     return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-2.0-flash-exp",
         temperature=0.7,
-        max_output_tokens=1024,
+        max_output_tokens=2048,
         api_key=GEMINI_KEY,
     )
 
 
 def _call_gemini_sync(prompt: str) -> str:
-    """
-    Synchronous call to Gemini via LangChain.
-    We'll wrap this in asyncio.to_thread for async use.
-    """
+    """Synchronous call to Gemini via LangChain"""
     client = _get_llm_client()
     try:
         resp = client.invoke([HumanMessage(content=prompt)])
-        # `resp.content` contains the reply
         text = resp.content if hasattr(resp, "content") else str(resp)
     except Exception as e:
-        text = f"[LLM error: {e}]"
+        text = f"bash: command error: {e}"
     return sanitize(text)
 
 
@@ -134,43 +164,50 @@ async def generate_response_for_command_async(
     command: str,
     filename_hint: str = None,
     persona: str = None,
+    context: dict = None,
     force_refresh: bool = False,
 ) -> str:
     """
-    Async wrapper: returns LLM-generated safe string. Uses cache keyed by command+filename_hint.
-    Call this from async code via 'await'.
+    Async wrapper that generates context-aware responses.
+    Uses cache keyed by command + directory context.
     """
-    key_raw = f"cmd:{command}|file:{filename_hint or ''}"
+    # Create cache key that includes directory context
+    current_dir = context.get("current_directory", "~") if context else "~"
+    key_raw = f"cmd:{command}|dir:{current_dir}|file:{filename_hint or ''}"
     cache_key = _cache_key("resp", key_raw)
+
     if not force_refresh and cache_key in _cache:
         return _cache[cache_key]
 
     prompt = _build_prompt(
-        command=command, filename_hint=filename_hint, persona=persona
+        command=command, filename_hint=filename_hint, persona=persona, context=context
     )
-    # call blocking LLM in thread to avoid blocking event loop
+
     try:
         out = await asyncio.to_thread(_call_gemini_sync, prompt)
-    except Exception as e:
-        out = f"[LLM call failed: {e}]"
-    # final sanitize & cache
+    except Exception:
+        out = f"bash: {command.split()[0]}: command not found"
+
     out = sanitize(out)
     _cache[cache_key] = out
-    # persist occasionally (cheap)
+
+    # Persist cache periodically
     if int(time.time()) % 10 == 0:
         _persist_cache()
+
     return out
 
 
-# small utility sync wrapper if needed:
 def generate_response_for_command(
     command: str,
     filename_hint: str = None,
     persona: str = None,
+    context: dict = None,
     force_refresh: bool = False,
 ) -> str:
+    """Synchronous wrapper"""
     return asyncio.get_event_loop().run_until_complete(
         generate_response_for_command_async(
-            command, filename_hint, persona, force_refresh
+            command, filename_hint, persona, context, force_refresh
         )
     )

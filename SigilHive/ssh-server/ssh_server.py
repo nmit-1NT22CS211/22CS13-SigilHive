@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from controller import Controller, SHOPHUB_STRUCTURE
 
 HOST = "0.0.0.0"
-PORT = int(os.getenv("PORT", "2222"))
+PORT = int(os.getenv("PORT", "2223"))
 
 controller = Controller(persona="shophub-production-server")
 
@@ -349,13 +349,16 @@ def ensure_host_key(path="ssh_host_key"):
     try:
         print("[honeypot] generating ssh host key...")
         key = asyncssh.generate_private_key("ssh-rsa")
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "wb") as f:
             f.write(key.export_private_key())
         # write public key too
         pub = key.export_public_key()
-        with open(path + ".pub", "w", encoding="utf-8") as f:
+        with open(path + ".pub", "wb") as f:
             f.write(pub)
-        os.chmod(path, 0o600)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass  # Ignore on Windows
         print("[honeypot] ssh host key generated")
     except Exception as e:
         print(f"[honeypot] failed to generate host key: {e}")

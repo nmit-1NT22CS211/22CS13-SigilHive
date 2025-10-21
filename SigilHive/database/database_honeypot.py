@@ -38,6 +38,11 @@ class MySQLProtocol(asyncio.Protocol):
         self.username = None
         self._buffer = b""
 
+        # Packet processing queue to ensure sequential handling per connection
+        self._packet_queue = asyncio.Queue()
+        self._worker_task = None
+        self._closed = False
+
     def connection_made(self, transport):
         self.transport = transport
         peername = transport.get_extra_info("peername")
@@ -82,6 +87,14 @@ class MySQLProtocol(asyncio.Protocol):
         """Send a MySQL packet with header"""
         length = len(payload)
         header = struct.pack("<I", length)[:3] + struct.pack("B", sequence_id)
+        # Optional debug logging to inspect raw packet bytes
+        if os.getenv("MYSQL_DEBUG", "0") == "1":
+            try:
+                print(
+                    f"[mysql][{self.session_id}] -> seq={sequence_id} len={length} header={header.hex()} payload={payload[:80]!r}"
+                )
+            except Exception:
+                pass
         self.transport.write(header + payload)
 
     def send_ok_packet(self, sequence_id=1, affected_rows=0, message=None):
@@ -108,39 +121,121 @@ class MySQLProtocol(asyncio.Protocol):
         )
         self.send_packet(payload, sequence_id)
 
-    def send_text_result(self, text, sequence_id=1):
-        """Send result as plain text in a result set"""
-        # Column count
-        self.send_packet(self.encode_length(1), sequence_id)
+    def send_text_result(self, result_data, sequence_id=1):
+        """Send result as a structured result set with correct sequencing."""
+        try:
+            def parse_mysql_table(text):
+                """Parse MySQL table format into columns and rows"""
+                lines = text.strip().split('\n')
+                columns = []
+                rows = []
+                header_found = False
+                
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('+'):
+                        continue
+                    if line.startswith('|'):
+                        cells = [cell.strip() for cell in line.strip('|').split('|')]
+                        if not header_found:
+                            columns = cells
+                            header_found = True
+                        else:
+                            rows.append(cells)
+                
+                return columns, rows
 
-        # Column definition
-        col_def = (
-            self.encode_length_string(b"def")
-            + self.encode_length_string(b"")
-            + self.encode_length_string(b"")
-            + self.encode_length_string(b"")
-            + self.encode_length_string(b"result")
-            + self.encode_length_string(b"result")
-            + b"\x0c"
-            + struct.pack("<H", 0x21)
-            + struct.pack("<I", 0x100)
-            + struct.pack("B", 0xFD)
-            + struct.pack("<H", 0x0000)
-            + struct.pack("B", 0x00)
-            + struct.pack("<H", 0x0000)
-        )
-        self.send_packet(col_def, sequence_id + 1)
+            # Handle different input types
+            if isinstance(result_data, str):
+                try:
+                    if result_data.strip().startswith('{'):
+                        import json
+                        parsed = json.loads(result_data)
+                        if isinstance(parsed, dict) and 'text' in parsed:
+                            columns, rows = parse_mysql_table(parsed['text'])
+                            result_data = {"columns": columns, "rows": rows}
+                        else:
+                            result_data = {"columns": ["result"], "rows": [[result_data]]}
+                except:
+                    result_data = {"columns": ["result"], "rows": [[result_data]]}
+            elif isinstance(result_data, dict):
+                if 'text' in result_data:
+                    # Parse MySQL table format from text field
+                    columns, rows = parse_mysql_table(result_data['text'])
+                    result_data = {"columns": columns, "rows": rows}
+                elif not ('columns' in result_data and 'rows' in result_data):
+                    result_data = {"columns": ["result"], "rows": [[str(result_data)]]}
+            else:
+                result_data = {"columns": ["result"], "rows": [[str(result_data)]]}
 
-        # EOF after columns
-        eof = b"\xfe" + struct.pack("<H", 0x0000) + struct.pack("<H", 0x0002)
-        self.send_packet(eof, sequence_id + 2)
+            # Ensure we have valid columns and rows
+            columns = result_data.get("columns", ["result"])
+            if not columns:
+                columns = ["result"]
+            rows = result_data.get("rows", [])
+            if not rows and columns == ["result"]:
+                rows = [["No results"]]
+            num_columns = len(columns)
 
-        # Row data
-        row = self.encode_length_string(text.encode())
-        self.send_packet(row, sequence_id + 3)
+            # Keep track of sequence
+            current_seq = sequence_id
 
-        # EOF after rows
-        self.send_packet(eof, sequence_id + 4)
+            # 1. Column count packet
+            self.send_packet(self.encode_length(num_columns), current_seq)
+            current_seq += 1
+
+            # 2. Column definition packets
+            for col_name in columns:
+                col_def = (
+                    self.encode_length_string(b"def")  # catalog
+                    + self.encode_length_string(b"test")  # schema
+                    + self.encode_length_string(b"test")  # table
+                    + self.encode_length_string(b"test")  # org_table
+                    + self.encode_length_string(str(col_name).encode())  # name
+                    + self.encode_length_string(str(col_name).encode())  # org_name
+                    + struct.pack("B", 0x0c)  # length of fixed fields
+                    + struct.pack("<H", 0x21)  # character set (utf8)
+                    + struct.pack("<I", 64)  # column length
+                    + struct.pack("B", 0x0f)  # column type (VARCHAR)
+                    + struct.pack("<H", 0)  # flags
+                    + struct.pack("B", 0)  # decimals
+                    + struct.pack("<H", 0)  # filler
+                )
+                self.send_packet(col_def, current_seq)
+                current_seq += 1
+
+            # 3. EOF packet after columns
+            eof_packet = b"\xfe" + struct.pack("<H", 0) + struct.pack("<H", 0x0002)
+            self.send_packet(eof_packet, current_seq)
+            current_seq += 1
+
+            # 4. Row data packets
+            for row in rows:
+                row_payload = b""
+                for value in row:
+                    if value is None:
+                        value_str = ""
+                    else:
+                        # Check if value is a hex string that needs decoding
+                        str_value = str(value).strip()
+                        if str_value.startswith('0x'):
+                            try:
+                                # Try to decode hex to utf-8 string
+                                value_str = bytes.fromhex(str_value[2:]).decode('utf-8')
+                            except:
+                                value_str = str_value
+                        else:
+                            value_str = str(value)
+                    row_payload += self.encode_length_string(value_str.encode())
+                self.send_packet(row_payload, current_seq)
+                current_seq += 1
+
+            # 5. Final EOF packet after rows
+            self.send_packet(eof_packet, current_seq)
+
+        except Exception as e:
+            print(f"Error in send_text_result: {e}")
+            self.send_error_packet(1064, "42000", "Internal server error", sequence_id)
 
     def encode_length(self, n):
         """Encode length as MySQL length-encoded integer"""
@@ -170,7 +265,41 @@ class MySQLProtocol(asyncio.Protocol):
             payload = self._buffer[4 : 4 + length]
             self._buffer = self._buffer[4 + length :]
 
-            asyncio.create_task(self.handle_packet(payload, sequence_id))
+            # Enqueue packets for sequential processing to avoid race conditions
+            try:
+                self._packet_queue.put_nowait((payload, sequence_id))
+                # Start worker if not running
+                if self._worker_task is None or self._worker_task.done():
+                    self._worker_task = asyncio.get_running_loop().create_task(
+                        self._packet_worker()
+                    )
+            except Exception as e:
+                print(f"[mysql][{self.session_id}] queue error: {e}")
+
+    async def _packet_worker(self):
+        """Worker that processes packets sequentially from the per-connection queue."""
+        while True:
+            try:
+                payload, seq = await self._packet_queue.get()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[mysql][{self.session_id}] worker queue error: {e}")
+                break
+
+            try:
+                await self.handle_packet(payload, seq)
+            except Exception as e:
+                print(f"[mysql][{self.session_id}] packet handler error: {e}")
+            finally:
+                try:
+                    self._packet_queue.task_done()
+                except Exception:
+                    pass
+
+            # If transport closed and queue empty, exit
+            if (self.transport is None) or (hasattr(self.transport, 'is_closing') and self.transport.is_closing() and self._packet_queue.empty()):
+                break
 
     async def handle_packet(self, payload, sequence_id):
         """Handle received MySQL packet"""
@@ -210,52 +339,139 @@ class MySQLProtocol(asyncio.Protocol):
 
     async def handle_query(self, query, sequence_id):
         """Handle SQL query using intelligent controller"""
-        event = {
-            "session_id": self.session_id,
-            "type": "query",
-            "query": query,
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "query_count": self.query_count,
-            "elapsed": time.time() - self.start_time,
-            "current_db": self.current_db,
-            "username": self.username,
-        }
-
         try:
-            action = await mysql_controller.get_action_for_query(self.session_id, event)
+            q_upper = query.upper().strip()
+            
+            # Special handling for SHOW DATABASES
+            if "SHOW DATABASE" in q_upper:
+                response_data = {
+                    "columns": ["Database"],
+                    "rows": [["information_schema"], ["mysql"], ["test"]]
+                }
+                self.send_text_result(response_data, sequence_id + 1)
+                return
+
+            # Immediate handling for USE <dbname>
+            if q_upper.startswith("USE ") or q_upper == "USE":
+                # attempt to extract and switch database without calling LLM
+                try:
+                    db_name = mysql_controller._parse_use_database(query)
+                    if db_name:
+                        success = mysql_controller.db_state.use_database(db_name)
+                        if success:
+                            self.current_db = db_name.lower()
+                            self.send_ok_packet(sequence_id + 1, message="Database changed")
+                        else:
+                            self.send_error_packet(1049, "42000", f"Unknown database '{db_name}'", sequence_id + 1)
+                    else:
+                        self.send_error_packet(1049, "42000", "Unknown database", sequence_id + 1)
+                except Exception as e:
+                    print(f"[mysql][{self.session_id}] error switching database: {e}")
+                    self.send_error_packet(1049, "42000", "Unknown database", sequence_id + 1)
+                return
+
+            event = {
+                "session_id": self.session_id,
+                "type": "query",
+                "query": query,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "query_count": self.query_count,
+                "elapsed": time.time() - self.start_time,
+                "current_db": self.current_db,
+                "username": self.username,
+            }
+
+            try:
+                action = await mysql_controller.get_action_for_query(self.session_id, event)
+            except Exception as e:
+                print(f"[mysql][{self.session_id}] controller error: {e}")
+                self.send_error_packet(1064, "42000", str(e), sequence_id + 1)
+                return
+
+            if action.get("disconnect"):
+                self.transport.close()
+                return
+
+            delay = action.get("delay", 0.0)
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+            response = action.get("response", {})
+            
+            # Normalize response to always be a dict
+            if isinstance(response, str):
+                try:
+                    if response.strip().startswith('{'):
+                        import json
+                        response = json.loads(response)
+                    else:
+                        response = {"text": response}
+                except:
+                    response = {"text": response}
+            elif not isinstance(response, dict):
+                response = {"text": str(response)}
+
+            response_text = response.get("text", "") if isinstance(response, dict) else str(response)
+
+            # Send appropriate response based on query type and response
+            next_sequence = sequence_id + 1
+            if response_text.startswith("ERROR"):
+                self.send_error_packet(1064, "42000", response_text, next_sequence)
+            elif "Database changed" in response_text:
+                if "USE" in q_upper:
+                    self.current_db = query.split()[1].strip('`;')
+                self.send_ok_packet(next_sequence, message=response_text)
+            elif "Query OK" in response_text:
+                # Extract affected rows if present
+                affected = 1 if "1 row" in response_text else 0
+                self.send_ok_packet(next_sequence, affected_rows=affected, message=response_text)
+            elif q_upper.startswith(("SELECT", "SHOW", "DESCRIBE", "DESC")):
+                if isinstance(response, dict) and 'text' in response:
+                    # Parse the text response for show databases and similar commands
+                    lines = response['text'].strip().split('\\n')
+                    columns = []
+                    rows = []
+                    for line in lines:
+                        line = line.strip()
+                        if line.startswith('+'):
+                            continue
+                        if line.startswith('|'):
+                            cells = [cell.strip() for cell in line[1:-1].split('|')]
+                            if not columns:
+                                columns = cells
+                            else:
+                                # Decode any hex-encoded values
+                                decoded_cells = []
+                                for cell in cells:
+                                    cell = cell.strip()
+                                    if cell.startswith('0x'):
+                                        try:
+                                            decoded = bytes.fromhex(cell[2:]).decode('utf-8')
+                                            decoded_cells.append(decoded)
+                                        except:
+                                            decoded_cells.append(cell)
+                                    else:
+                                        decoded_cells.append(cell)
+                                rows.append(decoded_cells)
+                    self.send_text_result({"columns": columns, "rows": rows}, next_sequence)
+                else:
+                    self.send_text_result(response, next_sequence)
+            else:
+                self.send_ok_packet(next_sequence, message=response_text or "Query OK")
+
         except Exception as e:
-            print(f"[mysql][{self.session_id}] controller error: {e}")
-            self.send_error_packet(1064, "42000", str(e), sequence_id + 1)
-            return
-
-        if action.get("disconnect"):
-            self.transport.close()
-            return
-
-        delay = action.get("delay", 0.0)
-        if delay > 0:
-            await asyncio.sleep(delay)
-
-        response = action.get("response", "")
-
-        # Send appropriate response based on query type and response
-        q_upper = query.upper().strip()
-
-        if response.startswith("ERROR"):
-            self.send_error_packet(1064, "42000", response, sequence_id + 1)
-        elif "Database changed" in response or "Query OK" in response:
-            # Extract affected rows if present
-            affected = 1 if "1 row" in response else 0
-            self.send_ok_packet(
-                sequence_id + 1, affected_rows=affected, message=response
-            )
-        elif q_upper.startswith(("SELECT", "SHOW", "DESCRIBE", "DESC")):
-            self.send_text_result(response, sequence_id + 1)
-        else:
-            self.send_ok_packet(sequence_id + 1, message=response)
+            print(f"[mysql][{self.session_id}] Error handling query: {e}")
+            self.send_error_packet(1064, "42000", "Internal server error", sequence_id + 1)
 
     def connection_lost(self, exc):
         print(f"[mysql][{self.session_id}] connection lost: {exc}")
+        # Mark closed and stop worker if running
+        self._closed = True
+        try:
+            if hasattr(self, '_worker_task') and self._worker_task and not self._worker_task.done():
+                self._worker_task.cancel()
+        except Exception:
+            pass
 
 
 # ============================================================================
@@ -276,6 +492,11 @@ class PostgreSQLProtocol(asyncio.Protocol):
         self.username = None
         self.database = None
         self._buffer = b""
+
+        # Packet processing queue to ensure sequential handling per connection
+        self._packet_queue = asyncio.Queue()
+        self._worker_task = None
+        self._closed = False
 
     def connection_made(self, transport):
         self.transport = transport
@@ -508,6 +729,8 @@ class PostgreSQLProtocol(asyncio.Protocol):
 
     async def handle_query(self, query):
         """Handle SQL query using intelligent controller for PostgreSQL"""
+        q_upper = query.upper().strip()
+
         event = {
             "session_id": self.session_id,
             "type": "query",
@@ -545,7 +768,6 @@ class PostgreSQLProtocol(asyncio.Protocol):
 
         response = action.get("response", "")
 
-        q_upper = query.upper().strip()
         try:
             if response.startswith("ERROR"):
                 # Send error response
@@ -563,7 +785,7 @@ class PostgreSQLProtocol(asyncio.Protocol):
                     elif q_upper.startswith("DELETE"):
                         tag = "DELETE 1"
                     else:
-                        tag = "QUERY 0"
+                        tag = "QUERY OK"
                 self.send_command_complete(tag)
             elif q_upper.startswith(("SELECT", "SHOW", "DESCRIBE", "DESC")):
                 # send simple textual result
@@ -571,7 +793,7 @@ class PostgreSQLProtocol(asyncio.Protocol):
                 self.send_simple_result(response)
             else:
                 # Generic OK
-                tag = action.get("command_tag", "QUERY 0")
+                tag = action.get("command_tag", "QUERY OK")
                 self.send_command_complete(tag)
         except Exception as e:
             print(f"[postgres][{self.session_id}] error sending response: {e}")

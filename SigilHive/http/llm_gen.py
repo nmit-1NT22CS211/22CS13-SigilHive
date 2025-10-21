@@ -1,14 +1,13 @@
 # llm_gen.py
 import os
 import json
-import hashlib
 import time
-from dotenv import load_dotenv
 import asyncio
-
-# LangChain Google Generative AI wrapper
+import hashlib
+from dotenv import load_dotenv
+from langchain_core.prompts import PromptTemplate
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage
 
 load_dotenv()
 
@@ -141,7 +140,7 @@ def _build_http_prompt(
 def _get_llm_client():
     return ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
-        temperature=0.7,
+        temperature=0.3,
         max_output_tokens=2048,
         api_key=GEMINI_KEY,
     )

@@ -6,8 +6,9 @@ import time
 from dotenv import load_dotenv
 import asyncio
 
+from langchain_core.prompts import PromptTemplate
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage
 
 load_dotenv()
 
@@ -142,7 +143,7 @@ Just the raw output as it would appear in a real terminal.
 
 def _get_llm_client():
     return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash-exp",
+        model="gemini-2.5-flash",
         temperature=0.7,
         max_output_tokens=2048,
         api_key=GEMINI_KEY,

@@ -1,16 +1,53 @@
 # llm_gen.py
+import logging
 import os
 import json
-import hashlib
 import time
-from dotenv import load_dotenv
 import asyncio
-
-# LangChain Google Generative AI wrapper
+import hashlib
+from dotenv import load_dotenv
+from langchain_core.prompts import PromptTemplate
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage
+
+# Suppress the noisy ALTS warning
+logging.getLogger('absl').setLevel(logging.ERROR)
 
 load_dotenv()
+
+# Configuration
+LLM_CACHE_FILE = "llm_cache.json"
+LLM_CACHE_EXPIRY_SECONDS = 3600  # 1 hour
+# Use a less powerful model for cost/speed, can be upgraded
+LLM_MODEL_NAME = "gemini-2.5-flash"
+
+# Updated prompt to enforce JSON for SELECT and provide better context
+DB_RESPONSE_PROMPT_TEMPLATE = """
+You are a {db_type} database version {persona}.
+Your task is to act as a realistic database engine and respond to the user's query.
+You have access to the following virtual database state:
+---
+{db_context}
+---
+
+User's query:
+"{query}"
+
+Analyze the query and the database state to generate a realistic response.
+
+**RESPONSE RULES:**
+1.  **For SELECT/SHOW/DESCRIBE queries:** Your response MUST be a JSON object with two keys: "columns" (a list of strings) and "rows" (a list of lists, where each inner list is a row).
+    - For SHOW DATABASES, always return:
+      {{"columns": ["Database"], "rows": [["information_schema"], ["mysql"], ["test"]]}}
+    - For other SELECT/SHOW queries:
+      {{"columns": ["id", "name", "email"], "rows": [[1, "Alice", "a@a.com"], [2, "Bob", "b@b.com"]]}} 
+    - If there are no results, return an empty "rows" list:
+      {{"columns": ["id", "name", "email"], "rows": []}}
+2.  **For DDL/DML (CREATE, INSERT, UPDATE, DELETE, etc.):** Respond with a short, realistic confirmation message like "Query OK, 1 row affected" or "Table created".
+3.  **For errors:** Respond with a realistic error message string, starting with "ERROR". For example: "ERROR 1054 (42S22): Unknown column 'emial' in 'field list'".
+4.  Do NOT add any extra explanations, markdown, or formatting. Only return the JSON object or the single-line string response.
+5.  Never return hexadecimal encoded strings - always use plain text for database names, table names, and values.
+"""
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_KEY:

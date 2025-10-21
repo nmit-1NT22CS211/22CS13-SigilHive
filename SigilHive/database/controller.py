@@ -1,5 +1,6 @@
 # controller_intelligent.py
 import re
+import json
 from typing import Dict, Any, List, Optional
 from llm_gen import generate_db_response_async
 
@@ -115,9 +116,13 @@ class DatabaseState:
             return self.databases[self.current_db]["tables"][table_name.lower()]
         return None
 
+    def show_databases_result(self) -> Dict[str, Any]:
+        """Return SHOW DATABASES response formatted as columns/rows."""
+        return {"columns": ["Database"], "rows": [[db] for db in sorted(self.databases.keys())]}
+
     def list_databases(self) -> List[str]:
-        """List all databases"""
-        return list(self.databases.keys())
+        """List all databases as a list of names"""
+        return sorted(self.databases.keys())
 
     def list_tables(self, db_name: str = None) -> List[str]:
         """List tables in a database"""
@@ -417,6 +422,53 @@ class IntelligentDBController:
                 "disconnect": session["suspicious_count"] > 10,
             }
 
+        # For read queries, try to answer from in-memory state first
+        if intent == "read":
+            # SHOW DATABASES -> return structured list
+            if re.match(r'^\s*SHOW\s+DATABASES', query, re.IGNORECASE):
+                return {
+                    "response": self.db_state.show_databases_result(),
+                    "delay": 0.0,
+                    "disconnect": session["suspicious_count"] > 10,
+                }
+
+            # SHOW TABLES -> list tables in current DB
+            if re.match(r'^\s*SHOW\s+TABLES', query, re.IGNORECASE):
+                tables = self.db_state.list_tables()
+                rows = [[t] for t in tables] if tables else []
+                colname = f"Tables_in_{self.db_state.current_db or ''}"
+                return {
+                    "response": {"columns": [colname], "rows": rows},
+                    "delay": 0.0,
+                    "disconnect": session["suspicious_count"] > 10,
+                }
+
+            # SELECT DATABASE() -> return current DB name
+            if 'DATABASE()' in query.upper():
+                return {
+                    "response": {"columns": ["DATABASE()"], "rows": [[self.db_state.current_db]]},
+                    "delay": 0.0,
+                    "disconnect": session["suspicious_count"] > 10,
+                }
+
+            # SELECT ... FROM <table> -> return actual table rows if table exists
+            table_name = self._parse_select(query)
+            if table_name:
+                table_info = self.db_state.get_table_data(table_name)
+                # If not found in current DB, search other DBs for the table
+                if table_info is None:
+                    for db in self.db_state.list_databases():
+                        db_tables = self.db_state.databases.get(db, {}).get('tables', {})
+                        if table_name.lower() in db_tables:
+                            table_info = db_tables[table_name.lower()]
+                            break
+                if table_info is not None:
+                    return {
+                        "response": {"columns": table_info.get("columns", []), "rows": table_info.get("rows", [])},
+                        "delay": 0.0,
+                        "disconnect": session["suspicious_count"] > 10,
+                    }
+
         # For read queries, generate response using LLM with current state
         db_context = self._build_context_for_llm(query, intent)
 
@@ -428,7 +480,7 @@ class IntelligentDBController:
 
         # Generate response using LLM
         try:
-            response = await generate_db_response_async(
+            raw_response = await generate_db_response_async(
                 query=query,
                 db_type=self.db_type,
                 intent=intent,
@@ -436,8 +488,19 @@ class IntelligentDBController:
                 table_hint=None,
                 persona=self.persona,
             )
+            # The response for a SELECT should be a JSON string.
+            # For other commands, it's a plain string.
+            response = {"text": raw_response}
+            if intent == "read" and raw_response.strip().startswith("{"):
+                try:
+                    response = json.loads(raw_response)
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, fall back to treating it as text
+                    print(f"Warning: Failed to parse JSON response: {raw_response}")
+                    response = {"text": raw_response}
+
         except Exception as e:
-            response = f"ERROR: Internal server error - {str(e)}"
+            response = {"text": f"ERROR: Internal server error - {str(e)}"}
 
         action = {
             "response": response,

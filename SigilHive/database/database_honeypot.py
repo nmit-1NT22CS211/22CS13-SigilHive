@@ -106,8 +106,7 @@ class MySQLProtocol(asyncio.Protocol):
             + struct.pack("<H", 0x0002)
             + struct.pack("<H", 0x0000)
         )
-        if message:
-            payload += message.encode()
+        # Do not append message text to avoid client-side duplication/framing issues
         self.send_packet(payload, sequence_id)
 
     def send_error_packet(self, error_code, sql_state, message, sequence_id=1):
@@ -332,6 +331,30 @@ class MySQLProtocol(asyncio.Protocol):
             self.query_count += 1
             await self.handle_query(query, sequence_id)
 
+        # COM_INIT_DB (0x02) - change default database
+        elif packet_type == 0x02:
+            try:
+                # payload[1:] contains the database name
+                db_name = payload[1:].decode("utf-8", errors="ignore").strip('\x00').strip()
+                print(f"[mysql][{self.session_id}] COM_INIT_DB -> change to: {db_name}")
+                if db_name:
+                    success = mysql_controller.db_state.use_database(db_name)
+                    if success:
+                        self.current_db = db_name.lower()
+                        # reply OK
+                        self.send_ok_packet(sequence_id + 1)
+                    else:
+                        self.send_error_packet(1049, "42000", f"Unknown database '{db_name}'", sequence_id + 1)
+                else:
+                    self.send_error_packet(1049, "42000", "Unknown database", sequence_id + 1)
+            except Exception as e:
+                print(f"[mysql][{self.session_id}] COM_INIT_DB handling error: {e}")
+                try:
+                    self.send_error_packet(1049, "42000", "Unknown database", sequence_id + 1)
+                except Exception:
+                    pass
+            return
+
         # COM_QUIT (0x01)
         elif packet_type == 0x01:
             print(f"[mysql][{self.session_id}] client quit")
@@ -420,15 +443,15 @@ class MySQLProtocol(asyncio.Protocol):
             elif "Database changed" in response_text:
                 if "USE" in q_upper:
                     self.current_db = query.split()[1].strip('`;')
-                self.send_ok_packet(next_sequence, message=response_text)
+                self.send_ok_packet(next_sequence)
             elif "Query OK" in response_text:
                 # Extract affected rows if present
                 affected = 1 if "1 row" in response_text else 0
-                self.send_ok_packet(next_sequence, affected_rows=affected, message=response_text)
+                self.send_ok_packet(next_sequence, affected_rows=affected)
             elif q_upper.startswith(("SELECT", "SHOW", "DESCRIBE", "DESC")):
                 if isinstance(response, dict) and 'text' in response:
                     # Parse the text response for show databases and similar commands
-                    lines = response['text'].strip().split('\\n')
+                    lines = response['text'].strip().split('\n')
                     columns = []
                     rows = []
                     for line in lines:
@@ -457,7 +480,7 @@ class MySQLProtocol(asyncio.Protocol):
                 else:
                     self.send_text_result(response, next_sequence)
             else:
-                self.send_ok_packet(next_sequence, message=response_text or "Query OK")
+                self.send_ok_packet(next_sequence)
 
         except Exception as e:
             print(f"[mysql][{self.session_id}] Error handling query: {e}")

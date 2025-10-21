@@ -469,6 +469,91 @@ class IntelligentDBController:
                         "disconnect": session["suspicious_count"] > 10,
                     }
 
+            # Simple aggregate support: COUNT/SUM/MAX/MIN for basic SELECTs
+            agg_match = re.search(r'^\s*SELECT\s+(?P<func>COUNT|SUM|MAX|MIN)\s*\(\s*(?P<col>\*|`?\w+`?)\s*\)\s+FROM\s+[`"]?(?P<table>\w+)[`"]?', query, re.IGNORECASE)
+            if agg_match:
+                func = agg_match.group('func').upper()
+                col = agg_match.group('col').strip('`')
+                table_name = agg_match.group('table')
+                table_info = self.db_state.get_table_data(table_name)
+                # if not in current DB, search others
+                if table_info is None:
+                    for db in self.list_databases():
+                        db_tables = self.db_state.databases.get(db, {}).get('tables', {})
+                        if table_name.lower() in db_tables:
+                            table_info = db_tables[table_name.lower()]
+                            break
+                if table_info is None:
+                    # Table not found -> return zero/empty aggregate
+                    return {
+                        "response": {"columns": [f"{func}({col})"], "rows": [[0]]},
+                        "delay": 0.0,
+                        "disconnect": session["suspicious_count"] > 10,
+                    }
+
+                rows = table_info.get('rows', [])
+                cols = table_info.get('columns', [])
+
+                # Compute aggregate
+                try:
+                    if func == 'COUNT':
+                        if col == '*':
+                            value = len(rows)
+                        else:
+                            if col in cols:
+                                idx = cols.index(col)
+                                value = sum(1 for r in rows if len(r) > idx and r[idx] not in (None, ''))
+                            else:
+                                value = 0
+                    elif func == 'SUM':
+                        if col in cols:
+                            idx = cols.index(col)
+                            s = 0
+                            for r in rows:
+                                try:
+                                    s += float(r[idx])
+                                except Exception:
+                                    pass
+                            value = int(s) if s.is_integer() else s
+                        else:
+                            value = 0
+                    elif func == 'MAX':
+                        if col in cols:
+                            idx = cols.index(col)
+                            vals = []
+                            for r in rows:
+                                try:
+                                    vals.append(float(r[idx]))
+                                except Exception:
+                                    pass
+                            value = max(vals) if vals else None
+                        else:
+                            value = None
+                    elif func == 'MIN':
+                        if col in cols:
+                            idx = cols.index(col)
+                            vals = []
+                            for r in rows:
+                                try:
+                                    vals.append(float(r[idx]))
+                                except Exception:
+                                    pass
+                            value = min(vals) if vals else None
+                        else:
+                            value = None
+                    else:
+                        value = None
+                except Exception:
+                    value = None
+
+                # Normalize None -> NULL-like empty
+                display_value = value if value is not None else ''
+                return {
+                    "response": {"columns": [f"{func}({col})"], "rows": [[display_value]]},
+                    "delay": 0.0,
+                    "disconnect": session["suspicious_count"] > 10,
+                }
+
         # For read queries, generate response using LLM with current state
         db_context = self._build_context_for_llm(query, intent)
 

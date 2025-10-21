@@ -1,4 +1,3 @@
-# ssh_server.py
 import asyncio
 import asyncssh
 import os
@@ -154,23 +153,6 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                 self._handle_cd_command(cmd)
                 continue
 
-            # Handle ls with directory argument
-            if cmd.startswith("ls "):
-                parts = cmd.split(maxsplit=1)
-                if len(parts) > 1:
-                    target = parts[1].strip()
-                    # Check if target exists
-                    target_path = self._normalize_path(target)
-                    if not self._directory_exists(target_path):
-                        try:
-                            self._chan.write(
-                                f"ls: cannot access '{target}': No such file or directory\n"
-                            )
-                            self._write_prompt()
-                        except Exception:
-                            pass
-                        continue
-
             self.cmd_count += 1
             asyncio.create_task(self.handle_command(cmd))
 
@@ -220,7 +202,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
             print(f"[honeypot][{self.session_id}] error writing prompt after cd: {e}")
 
     async def handle_command(self, cmd: str):
-        """Handle commands asynchronously with local validation + LLM"""
+        """Handle commands asynchronously - pass everything to controller"""
         if self._closed or not self._chan:
             return
 
@@ -234,44 +216,12 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
             "elapsed": time.time() - self.start_time,
         }
 
-        # ------------- LOCAL VALIDATION -------------
-        tokens = cmd.split()
-        if not tokens:
-            self._write_prompt()
-            return
-
-        base = tokens[0]
-        args = tokens[1:]
-
-        # Simulate realistic file existence in current directory
-        files_in_dir = SHOPHUB_STRUCTURE.get(self.current_dir, [])
-        valid_names = [f for f in files_in_dir if "." in f]
-
-        # cat command validation
-        if base == "cat" and args:
-            target = args[0]
-            if target not in valid_names:
-                # Typo or non-existent file (like database,js)
-                self._chan.write(f"cat: {target}: No such file or directory\n")
-                self._write_prompt()
-                return
-
-        # ls command with invalid directory
-        if base == "ls" and args:
-            target = args[0]
-            if not self._directory_exists(self._normalize_path(target)):
-                self._chan.write(
-                    f"ls: cannot access '{target}': No such file or directory\n"
-                )
-                self._write_prompt()
-                return
-
-        # ---------------------------------------------------
-
         try:
             action = await controller.get_action_for_session(self.session_id, event)
         except Exception as e:
             print(f"[honeypot][{self.session_id}] controller error: {e}")
+            cmd_parts = cmd.split()
+            base = cmd_parts[0] if cmd_parts else "unknown"
             action = {
                 "response": f"bash: {base}: command not found",
                 "delay": 0.05,
@@ -373,15 +323,17 @@ class HoneypotServer(asyncssh.SSHServer):
         print(
             f"[honeypot][{self.conn_id}] authentication attempt for user '{username}'"
         )
-        # Returning False indicates no extra auth steps required by the server
-        return False
+        # Return True to require authentication
+        return True
 
     def password_auth_supported(self):
+        """Enable password authentication"""
         return True
 
     def validate_password(self, username, password):
         """Always accept any credentials (for honeypot realism)"""
         print(f"[honeypot][{self.conn_id}] credentials: {username}:{password}")
+        # Always return True to accept any password (honeypot behavior)
         return True
 
     def session_requested(self):

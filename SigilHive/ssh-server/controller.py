@@ -7,7 +7,7 @@ import random
 from typing import Dict, Any
 import llm_gen
 
-# ShopHub application directory structure (unchanged)
+# ShopHub application directory structure
 SHOPHUB_STRUCTURE = {
     "~": {
         "type": "directory",
@@ -162,7 +162,7 @@ SHOPHUB_STRUCTURE = {
     },
 }
 
-# File contents for common files (unchanged)
+# File contents for common files
 FILE_CONTENTS = {
     "~/README.md": "ShopHub E-commerce Platform - Production Server\nThis server hosts the ShopHub application.",
     "~/shophub/README.md": "ShopHub - Modern E-commerce Platform\n\nA full-stack ecommerce solution built with Node.js, Express, and MongoDB.",
@@ -195,29 +195,23 @@ class Controller:
 
     def get_directory_context(self, current_dir: str) -> Dict[str, Any]:
         """Get context about the current directory for the LLM"""
-        # Normalize the directory path
         normalized_dir = current_dir.strip()
 
-        # collapse trailing slashes
         if normalized_dir.endswith("/") and normalized_dir != "/":
             normalized_dir = normalized_dir[:-1]
 
-        # try a few common normalizations
         if normalized_dir == "~" or normalized_dir == "":
             normalized_dir = "~"
         if normalized_dir in SHOPHUB_STRUCTURE:
             return SHOPHUB_STRUCTURE[normalized_dir]
 
-        # try adding ~/ prefix if user passed a relative path
         if not normalized_dir.startswith("~") and normalized_dir.startswith("/"):
-            # absolute path - leave as-is (not in shophub structure)
             pass
         elif not normalized_dir.startswith("~"):
             maybe = f"~/{normalized_dir}"
             if maybe in SHOPHUB_STRUCTURE:
                 return SHOPHUB_STRUCTURE[maybe]
 
-        # If exact match not found, return a generic directory context
         return {
             "type": "directory",
             "description": f"Directory: {current_dir}",
@@ -232,7 +226,6 @@ class Controller:
         cmd_parts = cmd.split()
         base_cmd = cmd_parts[0] if cmd_parts else ""
 
-        # common read commands
         if base_cmd in ("cat", "less", "more"):
             return "read_file"
         if base_cmd in ("ls", "dir", "ll"):
@@ -273,6 +266,35 @@ class Controller:
             return "remote_ssh"
         return "unknown"
 
+    def _find_file_case_insensitive(self, current_dir: str, filename: str) -> str:
+        """Find a file in FILE_CONTENTS with case-insensitive matching"""
+        # Build the expected full path
+        if filename.startswith("~"):
+            full_path = filename
+        elif filename.startswith("/"):
+            full_path = filename
+        else:
+            # Relative path - combine with current_dir
+            if current_dir.endswith("/"):
+                full_path = f"{current_dir}{filename}"
+            else:
+                full_path = f"{current_dir}/{filename}"
+
+        # Normalize path
+        full_path = full_path.replace("//", "/")
+
+        # Try exact match first
+        if full_path in FILE_CONTENTS:
+            return full_path
+
+        # Try case-insensitive match
+        full_path_lower = full_path.lower()
+        for key in FILE_CONTENTS.keys():
+            if key.lower() == full_path_lower:
+                return key
+
+        return None
+
     async def get_action_for_session(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -293,28 +315,32 @@ class Controller:
             response_text = current_dir
             return {"response": response_text, "delay": 0.01}
 
-        # If read_file and known file, return content quickly
+        # If read_file and known file, return content quickly (with case-insensitive matching)
         filename_hint = None
         if intent == "read_file":
-            parts = cmd.split(maxsplit=1)
-            if len(parts) > 1:
-                filename_hint = parts[1].strip()
-                full_path = filename_hint
-                # canonicalize relative paths to be under current_dir
-                if not (full_path.startswith("~") or full_path.startswith("/")):
-                    full_path = f"{current_dir.rstrip('/')}/{full_path}"
-                # normalize
-                full_path = full_path.replace("//", "/")
-                if full_path in FILE_CONTENTS:
-                    return {"response": FILE_CONTENTS[full_path], "delay": 0.05}
-                # try user-level paths (e.g. ~/shophub/README.md)
-                if full_path.startswith("~") and full_path in FILE_CONTENTS:
-                    return {"response": FILE_CONTENTS[full_path], "delay": 0.05}
+            parts = cmd.split()
+            # Filter out flags
+            file_parts = [p for p in parts[1:] if not p.startswith("-")]
+            if file_parts:
+                filename_hint = file_parts[0].strip()
 
-        # Intent-specific simulated responses (avoid invoking LLM when possible)
+                # Try to find the file with case-insensitive matching
+                matched_path = self._find_file_case_insensitive(
+                    current_dir, filename_hint
+                )
+                if matched_path:
+                    return {"response": FILE_CONTENTS[matched_path], "delay": 0.05}
+                else:
+                    # File not found
+                    return {
+                        "response": f"cat: {filename_hint}: No such file or directory",
+                        "delay": 0.02,
+                    }
+
+        # Intent-specific simulated responses
         try:
             if intent == "list_dir":
-                response_text = self._simulate_list_dir(dir_context)
+                response_text = self._simulate_list_dir(dir_context, cmd)
                 delay = 0.02 + random.random() * 0.15
                 asyncio.create_task(
                     self._log_event_async(
@@ -446,7 +472,6 @@ class Controller:
                 "current_dir": current_dir,
                 "response_preview": response[:400],
             }
-            # ensure directory exists
             with open("session_logs.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(log_line) + "\n")
         except Exception as e:
@@ -455,14 +480,21 @@ class Controller:
     # ---------------------------
     # Simulation helpers
     # ---------------------------
-    def _simulate_list_dir(self, dir_context: Dict[str, Any]) -> str:
+    def _simulate_list_dir(self, dir_context: Dict[str, Any], cmd: str) -> str:
         contents = dir_context.get("contents", [])
         if not contents:
             return ""  # empty dir
-        # Pretty list, show directories first (heuristic)
-        # dirs = [c for c in contents if not "." in c or c.endswith("/")]
-        # files = [c for c in contents if c not in dirs]
+
+        # Check if -a or -la flag is present
+        show_hidden = "-a" in cmd or "-la" in cmd or "-al" in cmd
+
         lines = []
+
+        # If -a flag, add . and .. entries
+        if show_hidden:
+            lines.append("drwxr-xr-x  2 shophub shophub 4096 .")
+            lines.append("drwxr-xr-x  2 shophub shophub 4096 ..")
+
         # show concise ls -la style
         for name in contents:
             if name.endswith("/"):
@@ -476,19 +508,16 @@ class Controller:
         return "\n".join(lines)
 
     def _simulate_identity(self) -> str:
-        # Provide a realistic whoami output
         return "shophub"
 
     def _simulate_system_info(self, cmd: str) -> str:
         if cmd.startswith("uname"):
-            # give uname -a like output
             return "Linux shophub-server 5.15.0-100-generic #1 SMP Thu Jan 1 00:00:00 UTC 2025 x86_64 GNU/Linux"
         if cmd.startswith("hostname"):
             return "shophub-server"
         return "Unknown system info query"
 
     def _simulate_process_list(self) -> str:
-        # Minimal ps aux like output
         sample = [
             "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND",
             "root         1  0.0  0.1 169084  6044 ?        Ss   09:30   0:01 /sbin/init",
@@ -499,10 +528,8 @@ class Controller:
         return "\n".join(sample)
 
     def _simulate_ping(self, cmd: str) -> str:
-        # basic simulation of ping -c 4 host
         parts = cmd.split()
         target = parts[1] if len(parts) > 1 else "127.0.0.1"
-        # construct 4 lines and summary
         rtts = [round(random.uniform(0.3, 3.0), 3) for _ in range(4)]
         lines = [f"PING {target} ({target}): 56 data bytes"]
         for i, r in enumerate(rtts, 1):
@@ -515,7 +542,6 @@ class Controller:
         return "\n".join(lines)
 
     def _simulate_http_fetch(self, cmd: str) -> str:
-        # naive simulation of curl/wget
         if "http" in cmd:
             return "HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\n\n<html><head><title>ShopHub</title></head><body><h1>ShopHub</h1></body></html>"
         return "wget: missing URL"
@@ -532,17 +558,15 @@ class Controller:
         return "docker: unknown command or not implemented in honeypot simulation"
 
     def _simulate_git(self, cmd: str, dir_context: Dict[str, Any]) -> str:
-        # If repository-like files exist, show a fake git status
         contents = dir_context.get("contents", [])
         if ".git" in contents:
             if cmd.strip() == "git status":
                 return "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean"
             return f"git: simulated output for '{cmd}'"
-        # if no .git, show typical git error
         return "fatal: not a git repository (or any of the parent directories): .git"
 
 
-# Quick test harness to exercise controller (runs when file executed directly)
+# Quick test harness
 if __name__ == "__main__":
 
     async def main():
@@ -552,19 +576,18 @@ if __name__ == "__main__":
         tests = [
             {"command": "pwd", "current_dir": "~"},
             {"command": "ls", "current_dir": "~/shophub"},
+            {"command": "ls -a", "current_dir": "~/shophub"},
             {"command": "whoami", "current_dir": "~"},
-            {"command": "uname -a", "current_dir": "~"},
-            {"command": "ps aux", "current_dir": "~"},
-            {"command": "ping -c 4 8.8.8.8", "current_dir": "~"},
-            {"command": "curl http://localhost:3000", "current_dir": "~/shophub"},
-            {"command": "cat README.md", "current_dir": "~"},
-            {"command": "git status", "current_dir": "~/shophub"},
+            {"command": "cat README.md", "current_dir": "~/shophub"},
+            {"command": "cat readme.md", "current_dir": "~/shophub"},
+            {"command": "cat README.MD", "current_dir": "~/shophub"},
+            {"command": "cat nonexistent.txt", "current_dir": "~/shophub"},
         ]
 
         for ev in tests:
             out = await c.get_action_for_session(session, ev)
             print(
-                f"\n$ {ev['command']}\n{out['response']}\n(delay: {out['delay']:.3f}s)"
+                f"\n$ {ev['command']} (in {ev['current_dir']})\n{out['response']}\n(delay: {out['delay']:.3f}s)"
             )
 
     asyncio.run(main())

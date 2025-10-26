@@ -1,79 +1,437 @@
-# controller_intelligent.py
+# shophub_db_controller.py
 import re
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from llm_gen import generate_db_response_async
 
 
-class DatabaseState:
-    """Maintains virtual database state"""
+class ShopHubDatabase:
+    """Maintains ShopHub e-commerce database state"""
 
-    def __init__(self, db_type: str):
-        self.db_type = db_type
+    def __init__(self):
         self.databases = {}
         self.current_db = None
+        self._initialize_shophub()
 
-        # Initialize with some default databases
-        if db_type == "mysql":
-            self.databases = {
-                "information_schema": {
+    def _initialize_shophub(self):
+        """Initialize ShopHub e-commerce databases and tables"""
+
+        # System databases
+        self.databases = {
+            "information_schema": {
+                "tables": {
+                    "schemata": {
+                        "columns": ["SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME"],
+                        "rows": [
+                            ["information_schema", "utf8"],
+                            ["mysql", "utf8"],
+                            ["shophub", "utf8mb4"],
+                            ["shophub_logs", "utf8mb4"],
+                        ],
+                    },
                     "tables": {
-                        "schemata": {
-                            "columns": ["schema_name", "default_character_set"]
-                        },
-                        "tables": {
-                            "columns": ["table_schema", "table_name", "table_type"]
-                        },
+                        "columns": ["TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE"],
+                        "rows": [
+                            ["shophub", "users", "BASE TABLE"],
+                            ["shophub", "products", "BASE TABLE"],
+                            ["shophub", "categories", "BASE TABLE"],
+                            ["shophub", "orders", "BASE TABLE"],
+                            ["shophub", "order_items", "BASE TABLE"],
+                            ["shophub", "cart", "BASE TABLE"],
+                            ["shophub", "payments", "BASE TABLE"],
+                            ["shophub", "reviews", "BASE TABLE"],
+                            ["shophub", "addresses", "BASE TABLE"],
+                            ["shophub", "admin_users", "BASE TABLE"],
+                        ],
+                    },
+                }
+            },
+            "mysql": {
+                "tables": {
+                    "user": {
+                        "columns": ["Host", "User", "authentication_string"],
+                        "rows": [
+                            ["localhost", "root", "*[REDACTED]"],
+                            ["localhost", "shophub_app", "*[REDACTED]"],
+                        ],
                     }
-                },
-                "mysql": {
-                    "tables": {
-                        "user": {"columns": ["host", "user", "authentication_string"]},
-                    }
-                },
-                "test": {"tables": {}},
-            }
-            self.current_db = "test"
-        else:  # postgresql
-            self.databases = {
-                "postgres": {
-                    "tables": {
-                        "pg_database": {"columns": ["datname", "datdba"]},
-                        "pg_tables": {"columns": ["schemaname", "tablename"]},
-                    }
-                },
-                "template0": {"tables": {}},
-                "template1": {"tables": {}},
-            }
-            self.current_db = "postgres"
+                }
+            },
+            "shophub": {
+                "tables": {
+                    "users": {
+                        "columns": [
+                            "id",
+                            "email",
+                            "password_hash",
+                            "first_name",
+                            "last_name",
+                            "created_at",
+                            "last_login",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["email", "varchar(100)", "NO", "UNI", None, ""],
+                            ["password_hash", "varchar(255)", "NO", "", None, ""],
+                            ["first_name", "varchar(50)", "YES", "", None, ""],
+                            ["last_name", "varchar(50)", "YES", "", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                            ["last_login", "timestamp", "YES", "", None, ""],
+                        ],
+                        "rows": [],
+                    },
+                    "categories": {
+                        "columns": [
+                            "id",
+                            "name",
+                            "slug",
+                            "description",
+                            "parent_id",
+                            "created_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["name", "varchar(100)", "NO", "", None, ""],
+                            ["slug", "varchar(100)", "NO", "UNI", None, ""],
+                            ["description", "text", "YES", "", None, ""],
+                            ["parent_id", "int", "YES", "MUL", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "products": {
+                        "columns": [
+                            "id",
+                            "name",
+                            "slug",
+                            "category_id",
+                            "price",
+                            "stock",
+                            "description",
+                            "image_url",
+                            "created_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["name", "varchar(200)", "NO", "", None, ""],
+                            ["slug", "varchar(200)", "NO", "UNI", None, ""],
+                            ["category_id", "int", "YES", "MUL", None, ""],
+                            ["price", "decimal(10,2)", "NO", "", None, ""],
+                            ["stock", "int", "NO", "", "0", ""],
+                            ["description", "text", "YES", "", None, ""],
+                            ["image_url", "varchar(255)", "YES", "", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "orders": {
+                        "columns": [
+                            "id",
+                            "user_id",
+                            "total_amount",
+                            "status",
+                            "payment_status",
+                            "shipping_address_id",
+                            "created_at",
+                            "updated_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["user_id", "int", "NO", "MUL", None, ""],
+                            ["total_amount", "decimal(10,2)", "NO", "", None, ""],
+                            ["status", "varchar(50)", "NO", "", "pending", ""],
+                            ["payment_status", "varchar(50)", "NO", "", "pending", ""],
+                            ["shipping_address_id", "int", "YES", "MUL", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                            [
+                                "updated_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED on update CURRENT_TIMESTAMP",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "order_items": {
+                        "columns": [
+                            "id",
+                            "order_id",
+                            "product_id",
+                            "quantity",
+                            "price",
+                            "created_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["order_id", "int", "NO", "MUL", None, ""],
+                            ["product_id", "int", "NO", "MUL", None, ""],
+                            ["quantity", "int", "NO", "", "1", ""],
+                            ["price", "decimal(10,2)", "NO", "", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "cart": {
+                        "columns": [
+                            "id",
+                            "user_id",
+                            "product_id",
+                            "quantity",
+                            "added_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["user_id", "int", "NO", "MUL", None, ""],
+                            ["product_id", "int", "NO", "MUL", None, ""],
+                            ["quantity", "int", "NO", "", "1", ""],
+                            [
+                                "added_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "payments": {
+                        "columns": [
+                            "id",
+                            "order_id",
+                            "amount",
+                            "payment_method",
+                            "transaction_id",
+                            "status",
+                            "created_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["order_id", "int", "NO", "MUL", None, ""],
+                            ["amount", "decimal(10,2)", "NO", "", None, ""],
+                            ["payment_method", "varchar(50)", "NO", "", None, ""],
+                            ["transaction_id", "varchar(100)", "NO", "UNI", None, ""],
+                            ["status", "varchar(50)", "NO", "", "pending", ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "reviews": {
+                        "columns": [
+                            "id",
+                            "product_id",
+                            "user_id",
+                            "rating",
+                            "title",
+                            "comment",
+                            "created_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["product_id", "int", "NO", "MUL", None, ""],
+                            ["user_id", "int", "NO", "MUL", None, ""],
+                            ["rating", "int", "NO", "", None, ""],
+                            ["title", "varchar(200)", "YES", "", None, ""],
+                            ["comment", "text", "YES", "", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "addresses": {
+                        "columns": [
+                            "id",
+                            "user_id",
+                            "type",
+                            "street",
+                            "city",
+                            "state",
+                            "zip_code",
+                            "country",
+                            "created_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["user_id", "int", "NO", "MUL", None, ""],
+                            ["type", "varchar(20)", "NO", "", "shipping", ""],
+                            ["street", "varchar(200)", "NO", "", None, ""],
+                            ["city", "varchar(100)", "NO", "", None, ""],
+                            ["state", "varchar(100)", "NO", "", None, ""],
+                            ["zip_code", "varchar(20)", "NO", "", None, ""],
+                            ["country", "varchar(100)", "NO", "", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "admin_users": {
+                        "columns": [
+                            "id",
+                            "username",
+                            "password_hash",
+                            "email",
+                            "role",
+                            "last_login",
+                            "created_at",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["username", "varchar(50)", "NO", "UNI", None, ""],
+                            ["password_hash", "varchar(255)", "NO", "", None, ""],
+                            ["email", "varchar(100)", "NO", "UNI", None, ""],
+                            ["role", "varchar(50)", "NO", "", "viewer", ""],
+                            ["last_login", "timestamp", "YES", "", None, ""],
+                            [
+                                "created_at",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                }
+            },
+            "shophub_logs": {
+                "tables": {
+                    "access_logs": {
+                        "columns": [
+                            "id",
+                            "user_id",
+                            "ip_address",
+                            "action",
+                            "endpoint",
+                            "timestamp",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["user_id", "int", "YES", "MUL", None, ""],
+                            ["ip_address", "varchar(45)", "NO", "", None, ""],
+                            ["action", "varchar(100)", "NO", "", None, ""],
+                            ["endpoint", "varchar(255)", "NO", "", None, ""],
+                            [
+                                "timestamp",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                    "error_logs": {
+                        "columns": [
+                            "id",
+                            "error_type",
+                            "message",
+                            "stack_trace",
+                            "timestamp",
+                        ],
+                        "column_defs": [
+                            ["id", "int", "NO", "PRI", None, "auto_increment"],
+                            ["error_type", "varchar(100)", "NO", "", None, ""],
+                            ["message", "text", "NO", "", None, ""],
+                            ["stack_trace", "text", "YES", "", None, ""],
+                            [
+                                "timestamp",
+                                "timestamp",
+                                "NO",
+                                "",
+                                "CURRENT_TIMESTAMP",
+                                "DEFAULT_GENERATED",
+                            ],
+                        ],
+                        "rows": [],
+                    },
+                }
+            },
+        }
+
+        self.current_db = "shophub"
 
     def create_database(self, db_name: str) -> bool:
-        """Create a new database"""
         if db_name.lower() not in self.databases:
             self.databases[db_name.lower()] = {"tables": {}}
             return True
         return False
 
     def drop_database(self, db_name: str) -> bool:
-        """Drop a database"""
         if db_name.lower() in self.databases and db_name.lower() not in [
             "information_schema",
             "mysql",
-            "postgres",
+            "shophub",
+            "shophub_logs",
         ]:
             del self.databases[db_name.lower()]
             return True
         return False
 
     def use_database(self, db_name: str) -> bool:
-        """Switch to a database"""
         if db_name.lower() in self.databases:
             self.current_db = db_name.lower()
             return True
         return False
 
     def create_table(self, table_name: str, columns: List[str]) -> bool:
-        """Create a new table in current database"""
         if (
             self.current_db
             and table_name.lower() not in self.databases[self.current_db]["tables"]
@@ -86,7 +444,6 @@ class DatabaseState:
         return False
 
     def drop_table(self, table_name: str) -> bool:
-        """Drop a table"""
         if (
             self.current_db
             and table_name.lower() in self.databases[self.current_db]["tables"]
@@ -96,7 +453,6 @@ class DatabaseState:
         return False
 
     def insert_into_table(self, table_name: str, values: List[Any]) -> bool:
-        """Insert a row into table"""
         if (
             self.current_db
             and table_name.lower() in self.databases[self.current_db]["tables"]
@@ -107,93 +463,90 @@ class DatabaseState:
             return True
         return False
 
-    def get_table_data(self, table_name: str) -> Optional[Dict]:
-        """Get table structure and data"""
+    def get_table_data(self, table_name: str, db_name: str = None) -> Optional[Dict]:
+        db = db_name.lower() if db_name else self.current_db
         if (
-            self.current_db
-            and table_name.lower() in self.databases[self.current_db]["tables"]
+            db
+            and db in self.databases
+            and table_name.lower() in self.databases[db]["tables"]
         ):
-            return self.databases[self.current_db]["tables"][table_name.lower()]
+            return self.databases[db]["tables"][table_name.lower()]
         return None
 
-    def show_databases_result(self) -> Dict[str, Any]:
-        """Return SHOW DATABASES response formatted as columns/rows."""
-        return {"columns": ["Database"], "rows": [[db] for db in sorted(self.databases.keys())]}
-
     def list_databases(self) -> List[str]:
-        """List all databases as a list of names"""
         return sorted(self.databases.keys())
 
     def list_tables(self, db_name: str = None) -> List[str]:
-        """List tables in a database"""
         db = db_name.lower() if db_name else self.current_db
         if db and db in self.databases:
             return list(self.databases[db]["tables"].keys())
         return []
 
     def get_state_summary(self) -> str:
-        """Get a summary of current state for LLM context"""
-        summary = f"Current DB: {self.current_db}\n"
-        summary += f"Available DBs: {', '.join(self.list_databases())}\n"
+        summary = f"ShopHub E-commerce Database System\n"
+        summary += f"Current Database: {self.current_db}\n"
+        summary += f"Available Databases: {', '.join(self.list_databases())}\n\n"
+
         if self.current_db:
             tables = self.list_tables()
-            summary += f"Tables in {self.current_db}: {', '.join(tables) if tables else 'none'}\n"
-            for table in tables[:5]:  # Limit to 5 tables
+            summary += f"Tables in '{self.current_db}': {len(tables)} tables\n"
+            for table in tables[:10]:
                 table_info = self.get_table_data(table)
                 if table_info:
-                    summary += f"  - {table}: {len(table_info.get('rows', []))} rows, columns: {', '.join(table_info.get('columns', []))}\n"
+                    row_count = len(table_info.get("rows", []))
+                    col_count = len(table_info.get("columns", []))
+                    summary += f"  - {table}: {row_count} rows, {col_count} columns\n"
+                    # Add column names for DESCRIBE queries
+                    cols = table_info.get("columns", [])
+                    summary += f"    Columns: {', '.join(cols)}\n"
+
         return summary
 
 
-class IntelligentDBController:
-    """
-    Intelligent controller that maintains database state and uses LLM for realistic responses
-    """
+class ShopHubDBController:
+    """Intelligent controller for ShopHub MySQL honeypot"""
 
-    def __init__(self, db_type: str = "postgresql", persona: str = None):
-        self.db_type = db_type
-        self.persona = persona or f"{db_type}-default"
+    def __init__(self):
+        self.db_state = ShopHubDatabase()
         self.sessions = {}
-        self.db_state = DatabaseState(db_type)
 
     def _get_session(self, session_id: str) -> Dict[str, Any]:
-        """Get or create session state"""
         if session_id not in self.sessions:
             self.sessions[session_id] = {
                 "query_history": [],
                 "suspicious_count": 0,
+                "failed_auth_attempts": 0,
+                "username": None,
             }
         return self.sessions[session_id]
 
     def _classify_query(self, query: str) -> str:
-        """Classify query intent"""
         q_upper = query.upper().strip()
 
-        if any(
-            x in q_upper for x in ["SELECT", "SHOW", "DESCRIBE", "DESC", "\\D", "\\L"]
-        ):
+        if any(x in q_upper for x in ["DESCRIBE", "DESC"]):
+            return "describe"
+        elif any(x in q_upper for x in ["SELECT", "SHOW", "EXPLAIN"]):
             return "read"
         elif any(x in q_upper for x in ["INSERT", "UPDATE", "DELETE"]):
             return "write"
-        elif any(x in q_upper for x in ["CREATE DATABASE", "CREATE SCHEMA"]):
+        elif "CREATE DATABASE" in q_upper or "CREATE SCHEMA" in q_upper:
             return "create_db"
-        elif any(x in q_upper for x in ["DROP DATABASE", "DROP SCHEMA"]):
+        elif "DROP DATABASE" in q_upper or "DROP SCHEMA" in q_upper:
             return "drop_db"
-        elif any(x in q_upper for x in ["CREATE TABLE"]):
+        elif "CREATE TABLE" in q_upper:
             return "create_table"
-        elif any(x in q_upper for x in ["DROP TABLE"]):
+        elif "DROP TABLE" in q_upper:
             return "drop_table"
-        elif any(x in q_upper for x in ["ALTER"]):
+        elif "ALTER" in q_upper:
             return "alter"
         elif any(x in q_upper for x in ["GRANT", "REVOKE"]):
             return "admin"
-        elif any(x in q_upper for x in ["USE", "\\C"]):
+        elif "USE" in q_upper:
             return "use_db"
         else:
             return "other"
 
     def _is_suspicious(self, query: str) -> bool:
-        """Detect suspicious patterns"""
         q_upper = query.upper()
         suspicious_patterns = [
             "UNION SELECT",
@@ -201,19 +554,21 @@ class IntelligentDBController:
             "AND 1=1",
             "' OR '",
             "'; DROP",
+            "--",
             "LOAD_FILE",
             "INTO OUTFILE",
+            "INTO DUMPFILE",
             "BENCHMARK(",
             "SLEEP(",
-            "PG_SLEEP(",
             "WAITFOR DELAY",
-            "XP_CMDSHELL",
             "../",
+            "password_hash",
+            "authentication_string",
+            "admin_users",
         ]
         return any(pattern in q_upper for pattern in suspicious_patterns)
 
     def _parse_create_database(self, query: str) -> Optional[str]:
-        """Extract database name from CREATE DATABASE"""
         match = re.search(
             r'CREATE\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
             query,
@@ -222,7 +577,6 @@ class IntelligentDBController:
         return match.group(1) if match else None
 
     def _parse_drop_database(self, query: str) -> Optional[str]:
-        """Extract database name from DROP DATABASE"""
         match = re.search(
             r'DROP\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+EXISTS\s+)?[`"]?(\w+)[`"]?',
             query,
@@ -231,12 +585,10 @@ class IntelligentDBController:
         return match.group(1) if match else None
 
     def _parse_use_database(self, query: str) -> Optional[str]:
-        """Extract database name from USE"""
         match = re.search(r'USE\s+[`"]?(\w+)[`"]?', query, re.IGNORECASE)
         return match.group(1) if match else None
 
-    def _parse_create_table(self, query: str) -> Optional[tuple]:
-        """Extract table name and columns from CREATE TABLE"""
+    def _parse_create_table(self, query: str) -> Optional[Tuple]:
         match = re.search(
             r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"]?(\w+)[`"]?\s*\((.*?)\)',
             query,
@@ -245,7 +597,6 @@ class IntelligentDBController:
         if match:
             table_name = match.group(1)
             columns_str = match.group(2)
-            # Extract column names (simplified)
             columns = []
             for col_def in columns_str.split(","):
                 col_name = col_def.strip().split()[0].strip('`"')
@@ -261,14 +612,12 @@ class IntelligentDBController:
         return None
 
     def _parse_drop_table(self, query: str) -> Optional[str]:
-        """Extract table name from DROP TABLE"""
         match = re.search(
             r'DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"]?(\w+)[`"]?', query, re.IGNORECASE
         )
         return match.group(1) if match else None
 
-    def _parse_insert(self, query: str) -> Optional[tuple]:
-        """Extract table name and values from INSERT"""
+    def _parse_insert(self, query: str) -> Optional[Tuple]:
         match = re.search(
             r'INSERT\s+INTO\s+[`"]?(\w+)[`"]?.*?VALUES\s*\((.*?)\)',
             query,
@@ -277,133 +626,112 @@ class IntelligentDBController:
         if match:
             table_name = match.group(1)
             values_str = match.group(2)
-            # Simple value extraction
             values = [v.strip().strip("'\"") for v in values_str.split(",")]
             return (table_name, values)
         return None
 
     def _parse_select(self, query: str) -> Optional[str]:
-        """Extract table name from SELECT"""
         match = re.search(r'FROM\s+[`"]?(\w+)[`"]?', query, re.IGNORECASE)
         return match.group(1) if match else None
 
-    def _execute_state_change(self, query: str, intent: str) -> tuple[bool, str]:
-        """
-        Execute state-changing operations and return (success, message)
-        """
+    def _parse_describe(self, query: str) -> Optional[str]:
+        match = re.search(r'(?:DESCRIBE|DESC)\s+[`"]?(\w+)[`"]?', query, re.IGNORECASE)
+        return match.group(1) if match else None
+
+    def _execute_state_change(self, query: str, intent: str) -> Tuple[bool, str]:
         if intent == "create_db":
             db_name = self._parse_create_database(query)
             if db_name:
                 success = self.db_state.create_database(db_name)
-                if success:
-                    return True, "Query OK, 1 row affected"
-                else:
-                    return (
+                return (
+                    (True, "Query OK, 1 row affected")
+                    if success
+                    else (
                         False,
                         f"ERROR 1007 (HY000): Can't create database '{db_name}'; database exists",
                     )
+                )
 
         elif intent == "drop_db":
             db_name = self._parse_drop_database(query)
             if db_name:
                 success = self.db_state.drop_database(db_name)
-                if success:
-                    return True, "Query OK, 0 rows affected"
-                else:
-                    return (
+                return (
+                    (True, "Query OK, 0 rows affected")
+                    if success
+                    else (
                         False,
                         f"ERROR 1008 (HY000): Can't drop database '{db_name}'; database doesn't exist",
                     )
+                )
 
         elif intent == "use_db":
             db_name = self._parse_use_database(query)
             if db_name:
                 success = self.db_state.use_database(db_name)
-                if success:
-                    return True, "Database changed"
-                else:
-                    return False, f"ERROR 1049 (42000): Unknown database '{db_name}'"
+                return (
+                    (True, "Database changed")
+                    if success
+                    else (False, f"ERROR 1049 (42000): Unknown database '{db_name}'")
+                )
 
         elif intent == "create_table":
             table_info = self._parse_create_table(query)
             if table_info:
                 table_name, columns = table_info
                 success = self.db_state.create_table(table_name, columns)
-                if success:
-                    return True, "Query OK, 0 rows affected"
-                else:
-                    return (
+                return (
+                    (True, "Query OK, 0 rows affected")
+                    if success
+                    else (
                         False,
                         f"ERROR 1050 (42S01): Table '{table_name}' already exists",
                     )
+                )
 
         elif intent == "drop_table":
             table_name = self._parse_drop_table(query)
             if table_name:
                 success = self.db_state.drop_table(table_name)
-                if success:
-                    return True, "Query OK, 0 rows affected"
-                else:
-                    return False, f"ERROR 1051 (42S02): Unknown table '{table_name}'"
+                return (
+                    (True, "Query OK, 0 rows affected")
+                    if success
+                    else (False, f"ERROR 1051 (42S02): Unknown table '{table_name}'")
+                )
 
         elif intent == "write":
             insert_info = self._parse_insert(query)
             if insert_info:
                 table_name, values = insert_info
                 success = self.db_state.insert_into_table(table_name, values)
-                if success:
-                    return True, "Query OK, 1 row affected"
-                else:
-                    return (
+                return (
+                    (True, "Query OK, 1 row affected")
+                    if success
+                    else (
                         False,
                         f"ERROR 1146 (42S02): Table '{table_name}' doesn't exist",
                     )
+                )
 
         return False, "Query OK"
-
-    def _build_context_for_llm(self, query: str, intent: str) -> str:
-        """Build rich context for LLM including current database state"""
-        context = self.db_state.get_state_summary()
-
-        # Add specific context based on query
-        if intent == "read":
-            table_name = self._parse_select(query)
-            if table_name:
-                table_data = self.db_state.get_table_data(table_name)
-                if table_data:
-                    context += f"\nQuerying table '{table_name}':\n"
-                    context += f"  Columns: {', '.join(table_data['columns'])}\n"
-                    context += f"  Rows: {len(table_data['rows'])}\n"
-                    if table_data["rows"]:
-                        context += "  Sample data:\n"
-                        for i, row in enumerate(table_data["rows"][:5]):
-                            context += f"    Row {i + 1}: {row}\n"
-
-        return context
 
     async def get_action_for_query(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Main method: receives query event, returns action dict.
-        Now with intelligent state management!
-        """
         query = event.get("query", "")
         session = self._get_session(session_id)
 
-        # Update session history
         session["query_history"].append(query)
         if len(session["query_history"]) > 20:
             session["query_history"] = session["query_history"][-20:]
 
-        # Classify and check for suspicious activity
         intent = self._classify_query(query)
         is_suspicious = self._is_suspicious(query)
 
         if is_suspicious:
             session["suspicious_count"] += 1
 
-        # Handle state-changing queries FIRST
+        # Handle state-changing queries
         if intent in [
             "create_db",
             "drop_db",
@@ -413,186 +741,153 @@ class IntelligentDBController:
             "write",
         ]:
             success, message = self._execute_state_change(query, intent)
-
             delay = 0.1 if is_suspicious else 0.05
-
             return {
                 "response": message,
                 "delay": delay,
                 "disconnect": session["suspicious_count"] > 10,
             }
 
-        # For read queries, try to answer from in-memory state first
+        # Handle DESCRIBE queries directly
+        if intent == "describe":
+            table_name = self._parse_describe(query)
+            if table_name:
+                table_info = self.db_state.get_table_data(table_name)
+                if table_info and "column_defs" in table_info:
+                    return {
+                        "response": {
+                            "columns": [
+                                "Field",
+                                "Type",
+                                "Null",
+                                "Key",
+                                "Default",
+                                "Extra",
+                            ],
+                            "rows": table_info["column_defs"],
+                        },
+                        "delay": 0.0,
+                        "disconnect": session["suspicious_count"] > 10,
+                    }
+
+        # Handle read queries
         if intent == "read":
-            # SHOW DATABASES -> return structured list
-            if re.match(r'^\s*SHOW\s+DATABASES', query, re.IGNORECASE):
+            q_upper = query.upper()
+
+            # SHOW DATABASES
+            if "SHOW DATABASES" in q_upper or "SHOW SCHEMAS" in q_upper:
                 return {
-                    "response": self.db_state.show_databases_result(),
+                    "response": {
+                        "columns": ["Database"],
+                        "rows": [[db] for db in self.db_state.list_databases()],
+                    },
                     "delay": 0.0,
                     "disconnect": session["suspicious_count"] > 10,
                 }
 
-            # SHOW TABLES -> list tables in current DB
-            if re.match(r'^\s*SHOW\s+TABLES', query, re.IGNORECASE):
+            # SHOW TABLES
+            if "SHOW TABLES" in q_upper:
                 tables = self.db_state.list_tables()
-                rows = [[t] for t in tables] if tables else []
-                colname = f"Tables_in_{self.db_state.current_db or ''}"
+                colname = f"Tables_in_{self.db_state.current_db}"
                 return {
-                    "response": {"columns": [colname], "rows": rows},
+                    "response": {"columns": [colname], "rows": [[t] for t in tables]},
                     "delay": 0.0,
                     "disconnect": session["suspicious_count"] > 10,
                 }
 
-            # SELECT DATABASE() -> return current DB name
-            if 'DATABASE()' in query.upper():
+            # SELECT DATABASE()
+            if "DATABASE()" in q_upper or "SCHEMA()" in q_upper:
                 return {
-                    "response": {"columns": ["DATABASE()"], "rows": [[self.db_state.current_db]]},
+                    "response": {
+                        "columns": ["DATABASE()"],
+                        "rows": [[self.db_state.current_db]],
+                    },
                     "delay": 0.0,
                     "disconnect": session["suspicious_count"] > 10,
                 }
 
-            # SELECT ... FROM <table> -> return actual table rows if table exists
+            # SELECT ... FROM table
             table_name = self._parse_select(query)
             if table_name:
                 table_info = self.db_state.get_table_data(table_name)
-                # If not found in current DB, search other DBs for the table
-                if table_info is None:
-                    for db in self.db_state.list_databases():
-                        db_tables = self.db_state.databases.get(db, {}).get('tables', {})
-                        if table_name.lower() in db_tables:
-                            table_info = db_tables[table_name.lower()]
-                            break
-                if table_info is not None:
-                    return {
-                        "response": {"columns": table_info.get("columns", []), "rows": table_info.get("rows", [])},
-                        "delay": 0.0,
-                        "disconnect": session["suspicious_count"] > 10,
-                    }
+                if table_info:
+                    columns = table_info.get("columns", [])
+                    rows = table_info.get("rows", [])
 
-            # Simple aggregate support: COUNT/SUM/MAX/MIN for basic SELECTs
-            agg_match = re.search(r'^\s*SELECT\s+(?P<func>COUNT|SUM|MAX|MIN)\s*\(\s*(?P<col>\*|`?\w+`?)\s*\)\s+FROM\s+[`"]?(?P<table>\w+)[`"]?', query, re.IGNORECASE)
-            if agg_match:
-                func = agg_match.group('func').upper()
-                col = agg_match.group('col').strip('`')
-                table_name = agg_match.group('table')
-                table_info = self.db_state.get_table_data(table_name)
-                # if not in current DB, search others
-                if table_info is None:
-                    for db in self.list_databases():
-                        db_tables = self.db_state.databases.get(db, {}).get('tables', {})
-                        if table_name.lower() in db_tables:
-                            table_info = db_tables[table_name.lower()]
-                            break
-                if table_info is None:
-                    # Table not found -> return zero/empty aggregate
-                    return {
-                        "response": {"columns": [f"{func}({col})"], "rows": [[0]]},
-                        "delay": 0.0,
-                        "disconnect": session["suspicious_count"] > 10,
-                    }
+                    # If table is empty or has very few rows, use LLM to generate data
+                    if len(rows) < 5:
+                        print(
+                            f"[controller] Table '{table_name}' has {len(rows)} rows, using LLM to generate data"
+                        )
+                        # Use LLM for data generation
+                        db_context = self.db_state.get_state_summary()
+                        delay = (
+                            min(0.5 + session["suspicious_count"] * 0.2, 2.0)
+                            if is_suspicious
+                            else 0.0
+                        )
 
-                rows = table_info.get('rows', [])
-                cols = table_info.get('columns', [])
+                        try:
+                            raw_response = await generate_db_response_async(
+                                query=query,
+                                intent=intent,
+                                db_context=db_context,
+                            )
 
-                # Compute aggregate
-                try:
-                    if func == 'COUNT':
-                        if col == '*':
-                            value = len(rows)
-                        else:
-                            if col in cols:
-                                idx = cols.index(col)
-                                value = sum(1 for r in rows if len(r) > idx and r[idx] not in (None, ''))
+                            print(
+                                f"[controller] LLM raw response type: {type(raw_response)}"
+                            )
+                            print(
+                                f"[controller] LLM raw response (first 200 chars): {str(raw_response)[:200]}"
+                            )
+
+                            # Try to parse as JSON
+                            if isinstance(raw_response, str):
+                                raw_response = raw_response.strip()
+                                if raw_response.startswith("{"):
+                                    try:
+                                        response = json.loads(raw_response)
+                                        print(
+                                            f"[controller] Successfully parsed JSON with keys: {response.keys()}"
+                                        )
+                                        # Validate it has the right structure
+                                        if "columns" in response and "rows" in response:
+                                            print(
+                                                f"[controller] Valid result set: {len(response['columns'])} columns, {len(response['rows'])} rows"
+                                            )
+                                        else:
+                                            print(
+                                                f"[controller] WARNING: JSON missing columns/rows keys"
+                                            )
+                                            response = {"text": raw_response}
+                                    except json.JSONDecodeError as e:
+                                        print(f"[controller] JSON parse failed: {e}")
+                                        response = {"text": raw_response}
+                                else:
+                                    response = {"text": raw_response}
                             else:
-                                value = 0
-                    elif func == 'SUM':
-                        if col in cols:
-                            idx = cols.index(col)
-                            s = 0
-                            for r in rows:
-                                try:
-                                    s += float(r[idx])
-                                except Exception:
-                                    pass
-                            value = int(s) if s.is_integer() else s
-                        else:
-                            value = 0
-                    elif func == 'MAX':
-                        if col in cols:
-                            idx = cols.index(col)
-                            vals = []
-                            for r in rows:
-                                try:
-                                    vals.append(float(r[idx]))
-                                except Exception:
-                                    pass
-                            value = max(vals) if vals else None
-                        else:
-                            value = None
-                    elif func == 'MIN':
-                        if col in cols:
-                            idx = cols.index(col)
-                            vals = []
-                            for r in rows:
-                                try:
-                                    vals.append(float(r[idx]))
-                                except Exception:
-                                    pass
-                            value = min(vals) if vals else None
-                        else:
-                            value = None
-                    else:
-                        value = None
-                except Exception:
-                    value = None
+                                response = raw_response
 
-                # Normalize None -> NULL-like empty
-                display_value = value if value is not None else ''
-                return {
-                    "response": {"columns": [f"{func}({col})"], "rows": [[display_value]]},
-                    "delay": 0.0,
-                    "disconnect": session["suspicious_count"] > 10,
-                }
+                        except Exception as e:
+                            print(f"[controller] LLM generation error: {e}")
+                            response = {
+                                "text": f"ERROR: Internal server error - {str(e)}"
+                            }
 
-        # For read queries, generate response using LLM with current state
-        db_context = self._build_context_for_llm(query, intent)
+                        return {
+                            "response": response,
+                            "delay": delay,
+                            "disconnect": session["suspicious_count"] > 10,
+                        }
 
-        delay = 0.0
-        if is_suspicious:
-            delay = min(0.5 + session["suspicious_count"] * 0.2, 2.0)
+                    # Simple LIMIT support for existing data
+                    limit_match = re.search(r"LIMIT\s+(\d+)", query, re.IGNORECASE)
+                    if limit_match:
+                        limit = int(limit_match.group(1))
+                        rows = rows[:limit]
 
-        should_disconnect = session["suspicious_count"] > 10
-
-        # Generate response using LLM
-        try:
-            raw_response = await generate_db_response_async(
-                query=query,
-                db_type=self.db_type,
-                intent=intent,
-                db_context=db_context,
-                table_hint=None,
-                persona=self.persona,
-            )
-            # The response for a SELECT should be a JSON string.
-            # For other commands, it's a plain string.
-            response = {"text": raw_response}
-            if intent == "read" and raw_response.strip().startswith("{"):
-                try:
-                    response = json.loads(raw_response)
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, fall back to treating it as text
-                    print(f"Warning: Failed to parse JSON response: {raw_response}")
-                    response = {"text": raw_response}
-
-        except Exception as e:
-            response = {"text": f"ERROR: Internal server error - {str(e)}"}
-
-        action = {
-            "response": response,
-            "delay": delay,
-        }
-
-        if should_disconnect:
-            action["disconnect"] = True
-
-        return action
+                    return {
+                        "response": {"columns": columns, "rows": rows},
+                        "delay": 0.0,
+                        "disconnect": session["suspicious_count"] > 10,
+                    }

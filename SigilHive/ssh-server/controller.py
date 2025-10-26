@@ -266,6 +266,18 @@ class Controller:
             return "remote_ssh"
         return "unknown"
 
+    def _file_exists_in_directory(self, current_dir: str, filename: str) -> bool:
+        """Check if a file exists in the directory structure"""
+        dir_context = self.get_directory_context(current_dir)
+        contents = dir_context.get("contents", [])
+
+        # Check case-insensitive match
+        filename_lower = filename.lower()
+        for item in contents:
+            if item.lower() == filename_lower:
+                return True
+        return False
+
     def _find_file_case_insensitive(self, current_dir: str, filename: str) -> str:
         """Find a file in FILE_CONTENTS with case-insensitive matching"""
         # Build the expected full path
@@ -315,7 +327,7 @@ class Controller:
             response_text = current_dir
             return {"response": response_text, "delay": 0.01}
 
-        # If read_file and known file, return content quickly (with case-insensitive matching)
+        # If read_file, check if file exists in directory structure
         filename_hint = None
         if intent == "read_file":
             parts = cmd.split()
@@ -324,18 +336,21 @@ class Controller:
             if file_parts:
                 filename_hint = file_parts[0].strip()
 
-                # Try to find the file with case-insensitive matching
+                # First check if file exists in predefined FILE_CONTENTS
                 matched_path = self._find_file_case_insensitive(
                     current_dir, filename_hint
                 )
                 if matched_path:
                     return {"response": FILE_CONTENTS[matched_path], "delay": 0.05}
-                else:
-                    # File not found
+
+                # If not in FILE_CONTENTS, check if it exists in directory structure
+                if not self._file_exists_in_directory(current_dir, filename_hint):
+                    # File doesn't exist in directory structure
                     return {
                         "response": f"cat: {filename_hint}: No such file or directory",
                         "delay": 0.02,
                     }
+                # File exists in structure but not in FILE_CONTENTS - let LLM generate it
 
         # Intent-specific simulated responses
         try:

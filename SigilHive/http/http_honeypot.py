@@ -1,29 +1,28 @@
-# http_honeypot.py
+# https_honeypot.py
 import asyncio
 import os
+import ssl
 import uuid
 import time
 from datetime import datetime, timezone
-from controller import IntelligentHTTPController
+from controller import ShopHubController
 
 # Configuration
-HTTP_HOST = "0.0.0.0"
-HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
+HTTPS_HOST = "0.0.0.0"
 HTTPS_PORT = int(os.getenv("HTTPS_PORT", "8443"))
 
-# Use intelligent controller
-http_controller = IntelligentHTTPController(server_type="nginx", persona="nginx/1.18.0")
+# Use ShopHub controller
+controller = ShopHubController()
 
 
-class HTTPProtocol(asyncio.Protocol):
-    """Implements HTTP/1.1 protocol for honeypot"""
+class HTTPSProtocol(asyncio.Protocol):
+    """Implements HTTPS protocol for ShopHub honeypot"""
 
-    def __init__(self, is_https: bool = False):
+    def __init__(self):
         self.transport = None
-        self.session_id = str(uuid.uuid4())
+        self.session_id = str(uuid.uuid4())[:8]
         self.request_count = 0
         self.start_time = time.time()
-        self.is_https = is_https
         self._buffer = b""
         self.remote_addr = None
 
@@ -31,73 +30,77 @@ class HTTPProtocol(asyncio.Protocol):
         self.transport = transport
         peername = transport.get_extra_info("peername")
         self.remote_addr = peername[0] if peername else "unknown"
-        protocol = "https" if self.is_https else "http"
-        print(f"[{protocol}][{self.session_id}] connection from {peername}")
+        print(f"[https][{self.session_id}] connection from {peername}")
 
     def data_received(self, data):
         self._buffer += data
-        
+
         # Try to parse HTTP request(s)
         while b"\r\n\r\n" in self._buffer:
             # Find end of headers
             header_end = self._buffer.index(b"\r\n\r\n")
-            request_data = self._buffer[:header_end + 4]
-            
+            request_data = self._buffer[: header_end + 4]
+
             # Parse the request
             try:
                 lines = request_data.decode("utf-8", errors="ignore").split("\r\n")
                 if not lines:
-                    self._buffer = self._buffer[header_end + 4:]
+                    self._buffer = self._buffer[header_end + 4 :]
                     continue
-                
+
                 # Parse request line
                 request_line = lines[0]
                 parts = request_line.split(" ")
                 if len(parts) != 3:
-                    self._buffer = self._buffer[header_end + 4:]
+                    self._buffer = self._buffer[header_end + 4 :]
                     continue
-                
+
                 method, path, version = parts
-                
+
                 # Parse headers
                 headers = {}
                 for line in lines[1:]:
                     if ": " in line:
                         key, value = line.split(": ", 1)
                         headers[key.lower()] = value
-                
+
                 # Check for body
                 body = None
                 content_length = int(headers.get("content-length", 0))
-                
+
                 if content_length > 0:
                     # Need to read body
                     body_start = header_end + 4
                     if len(self._buffer) < body_start + content_length:
                         # Wait for complete body
                         break
-                    body = self._buffer[body_start:body_start + content_length].decode("utf-8", errors="ignore")
-                    self._buffer = self._buffer[body_start + content_length:]
+                    body = self._buffer[
+                        body_start : body_start + content_length
+                    ].decode("utf-8", errors="ignore")
+                    self._buffer = self._buffer[body_start + content_length :]
                 else:
-                    self._buffer = self._buffer[header_end + 4:]
-                
+                    self._buffer = self._buffer[header_end + 4 :]
+
                 # Handle the request
                 self.request_count += 1
-                asyncio.create_task(self.handle_request(method, path, version, headers, body))
-                
+                asyncio.create_task(
+                    self.handle_request(method, path, version, headers, body)
+                )
+
             except Exception as e:
-                print(f"[http][{self.session_id}] parse error: {e}")
-                self._buffer = self._buffer[header_end + 4:]
+                print(f"[https][{self.session_id}] parse error: {e}")
+                self._buffer = self._buffer[header_end + 4 :]
                 continue
 
-    async def handle_request(self, method: str, path: str, version: str, headers: dict, body: str = None):
-        """Handle HTTP request using intelligent controller"""
-        protocol = "https" if self.is_https else "http"
-        print(f"[{protocol}][{self.session_id}] {method} {path}")
-        
+    async def handle_request(
+        self, method: str, path: str, version: str, headers: dict, body: str = None
+    ):
+        """Handle HTTPS request using ShopHub controller"""
+        print(f"[https][{self.session_id}] {method} {path}")
+
         event = {
             "session_id": self.session_id,
-            "type": "http_request",
+            "type": "https_request",
             "method": method,
             "path": path,
             "version": version,
@@ -107,13 +110,12 @@ class HTTPProtocol(asyncio.Protocol):
             "request_count": self.request_count,
             "elapsed": time.time() - self.start_time,
             "remote_addr": self.remote_addr,
-            "is_https": self.is_https,
         }
 
         try:
-            action = await http_controller.get_action_for_request(self.session_id, event)
+            action = await controller.get_action_for_request(self.session_id, event)
         except Exception as e:
-            print(f"[{protocol}][{self.session_id}] controller error: {e}")
+            print(f"[https][{self.session_id}] controller error: {e}")
             action = {
                 "status_code": 500,
                 "headers": {"Content-Type": "text/html", "Server": "nginx/1.18.0"},
@@ -135,11 +137,13 @@ class HTTPProtocol(asyncio.Protocol):
 
         # Disconnect if needed
         if action.get("disconnect"):
-            print(f"[{protocol}][{self.session_id}] disconnecting due to suspicious activity")
+            print(
+                f"[https][{self.session_id}] disconnecting due to suspicious activity"
+            )
             self.transport.close()
 
     def send_response(self, status_code: int, headers: dict, body: str):
-        """Send HTTP response"""
+        """Send HTTPS response"""
         # Status line
         status_messages = {
             200: "OK",
@@ -178,58 +182,129 @@ class HTTPProtocol(asyncio.Protocol):
         try:
             self.transport.write(response.encode("utf-8"))
         except Exception as e:
-            print(f"[http][{self.session_id}] send error: {e}")
+            print(f"[https][{self.session_id}] send error: {e}")
 
     def connection_lost(self, exc):
-        protocol = "https" if self.is_https else "http"
         if exc:
-            print(f"[{protocol}][{self.session_id}] connection lost: {exc}")
+            print(f"[https][{self.session_id}] connection lost: {exc}")
         else:
-            print(f"[{protocol}][{self.session_id}] connection closed")
+            print(f"[https][{self.session_id}] connection closed")
 
 
-class HTTPSProtocol(HTTPProtocol):
-    """HTTPS variant - same as HTTP but marked as secure"""
-    
-    def __init__(self):
-        super().__init__(is_https=True)
+def generate_self_signed_cert(certfile="shophub_cert.pem", keyfile="shophub_key.pem"):
+    """Generate self-signed certificate for ShopHub"""
+    if os.path.exists(certfile) and os.path.exists(keyfile):
+        return certfile, keyfile
+
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+        import datetime as dt
+
+        print("[https] Generating self-signed certificate for ShopHub...")
+
+        # Generate private key
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+        )
+
+        # Generate certificate
+        subject = issuer = x509.Name(
+            [
+                x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+                x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
+                x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ShopHub Inc"),
+                x509.NameAttribute(NameOID.COMMON_NAME, "shophub.com"),
+            ]
+        )
+
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(private_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(dt.datetime.now(timezone.utc))
+            .not_valid_after(dt.datetime.now(timezone.utc) + dt.timedelta(days=365))
+            .add_extension(
+                x509.SubjectAlternativeName(
+                    [
+                        x509.DNSName("shophub.com"),
+                        x509.DNSName("www.shophub.com"),
+                        x509.DNSName("localhost"),
+                    ]
+                ),
+                critical=False,
+            )
+            .sign(private_key, hashes.SHA256())
+        )
+
+        # Write private key
+        with open(keyfile, "wb") as f:
+            f.write(
+                private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
+
+        # Write certificate
+        with open(certfile, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+        print(f"[https] Certificate generated: {certfile}, {keyfile}")
+        return certfile, keyfile
+
+    except ImportError:
+        print("[https] ERROR: cryptography package not installed")
+        print("[https] Install with: pip install cryptography")
+        raise
 
 
 async def main():
     loop = asyncio.get_running_loop()
 
-    # Start HTTP honeypot
-    http_server = await loop.create_server(
-        lambda: HTTPProtocol(is_https=False), HTTP_HOST, HTTP_PORT
-    )
-    print(f"[honeypot] HTTP honeypot listening on {HTTP_HOST}:{HTTP_PORT}")
+    # Generate or load certificate
+    certfile, keyfile = generate_self_signed_cert()
 
-    # Start HTTPS honeypot (without actual TLS - just marked as HTTPS for logging)
-    # In production, you would add SSL context here
-    https_server = await loop.create_server(
-        lambda: HTTPSProtocol(), HTTP_HOST, HTTPS_PORT
+    # Create SSL context
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ssl_context.load_cert_chain(certfile, keyfile)
+
+    # Optional: Set minimum TLS version
+    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+
+    print(f"[honeypot] Starting ShopHub HTTPS honeypot on {HTTPS_HOST}:{HTTPS_PORT}")
+    print(f"[honeypot] Using certificate: {certfile}")
+    print("[honeypot] Simulating: ShopHub E-commerce Platform")
+
+    # Start HTTPS honeypot with SSL
+    server = await loop.create_server(
+        HTTPSProtocol, HTTPS_HOST, HTTPS_PORT, ssl=ssl_context
     )
-    print(f"[honeypot] HTTPS honeypot listening on {HTTP_HOST}:{HTTPS_PORT}")
-    print("[honeypot] Note: HTTPS is not using actual TLS encryption in this demo")
+
+    print(f"[honeypot] HTTPS honeypot listening on https://{HTTPS_HOST}:{HTTPS_PORT}")
+    print(f"[honeypot] Access with: curl -k https://localhost:{HTTPS_PORT}")
+    print(f"[honeypot] Or visit: https://localhost:{HTTPS_PORT}")
 
     try:
-        await asyncio.gather(
-            http_server.serve_forever(),
-            https_server.serve_forever()
-        )
+        await server.serve_forever()
     except asyncio.CancelledError:
         pass
     finally:
-        http_server.close()
-        https_server.close()
-        await http_server.wait_closed()
-        await https_server.wait_closed()
-        print("[honeypot] servers shut down gracefully")
+        server.close()
+        await server.wait_closed()
+        print("[honeypot] server shut down gracefully")
 
 
 if __name__ == "__main__":
     try:
-        print("[honeypot] starting HTTP honeypot...")
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n[honeypot] stopped by user")

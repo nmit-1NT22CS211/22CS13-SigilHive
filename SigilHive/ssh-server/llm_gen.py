@@ -5,8 +5,7 @@ import hashlib
 import time
 from dotenv import load_dotenv
 import asyncio
-
-from langchain_core.prompts import PromptTemplate
+import re
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -71,11 +70,24 @@ def sanitize(text: str) -> str:
     if not isinstance(text, str):
         return ""
     out = text
+
+    # Remove markdown code fences
+    # Remove opening code fences like ```json, ```javascript, ```html, etc.
+    out = re.sub(r"```[a-zA-Z]*\n?", "", out)
+    # Remove closing code fences
+    out = re.sub(r"\n?```", "", out)
+
+    # Remove markdown headers at the start of lines
+    out = re.sub(r"^#+\s+", "", out, flags=re.MULTILINE)
+
+    # Remove any remaining triple backticks
+    out = out.replace("```", "")
+
     for b in _BANNED_SUBSTRS:
         out = out.replace(b, "[REDACTED]")
     if len(out) > 8000:
         out = out[:8000] + "\n...[truncated]"
-    return out
+    return out.strip()
 
 
 def _build_prompt(
@@ -123,6 +135,14 @@ CRITICAL SAFETY RULES:
 5) Make outputs contextually appropriate for the current directory and application
 6) Keep outputs realistic and consistent with an e-commerce platform environment
 
+OUTPUT FORMAT - EXTREMELY IMPORTANT:
+- Output MUST be RAW TERMINAL TEXT ONLY
+- NEVER EVER use markdown code fences (no ```, no ```json, no ```javascript, no ```html, NOTHING)
+- NEVER use markdown formatting of any kind
+- NEVER add explanatory text or descriptions
+- Output exactly what would appear in a real terminal, nothing more
+- If showing file contents, show the actual file content directly with no wrapping
+
 CONTEXTUAL GUIDELINES:
 - If in application directories, show relevant code snippets, configs, or logs
 - If listing directories (ls), show contents that match the current directory context
@@ -152,12 +172,17 @@ def _get_llm_client():
 
 def _call_gemini_sync(prompt: str) -> str:
     """Synchronous call to Gemini via LangChain"""
+    if not GEMINI_KEY:
+        return "# Configuration Error\n# GEMINI_API_KEY not set. Please configure your API key.\n# This is a simulated file content."
+
     client = _get_llm_client()
     try:
         resp = client.invoke([HumanMessage(content=prompt)])
         text = resp.content if hasattr(resp, "content") else str(resp)
     except Exception as e:
-        text = f"bash: command error: {e}"
+        print(f"[llm_gen] Gemini API error: {e}")
+        # Return a generic simulated response instead of error
+        text = "# File content simulation\n# (LLM unavailable - showing placeholder)\nconst placeholder = true;"
     return sanitize(text)
 
 

@@ -4,10 +4,18 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 from controller import Controller, SHOPHUB_STRUCTURE
+
+# Load environment variables from .env file
+load_dotenv()
 
 HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", "2223"))
+
+# Configure valid credentials
+VALID_USERNAME = os.getenv("SSH_USERNAME", "shophub")
+VALID_PASSWORD = os.getenv("SSH_PASSWORD", "ShopHub121!")
 
 controller = Controller(persona="shophub-production-server")
 
@@ -330,11 +338,31 @@ class HoneypotServer(asyncssh.SSHServer):
         """Enable password authentication"""
         return True
 
+    def kbdint_auth_supported(self):
+        """Disable keyboard-interactive authentication"""
+        return False
+
+    def public_key_auth_supported(self):
+        """Disable public key authentication"""
+        return False
+
     def validate_password(self, username, password):
-        """Always accept any credentials (for honeypot realism)"""
-        print(f"[honeypot][{self.conn_id}] credentials: {username}:{password}")
-        # Always return True to accept any password (honeypot behavior)
-        return True
+        """Validate password against configured credentials"""
+        print(f"[honeypot][{self.conn_id}] login attempt: {username}:{password}")
+
+        # Check if username and password match
+        is_valid = username == VALID_USERNAME and password == VALID_PASSWORD
+
+        if is_valid:
+            print(
+                f"[honeypot][{self.conn_id}] ✓ authentication successful for '{username}'"
+            )
+        else:
+            print(
+                f"[honeypot][{self.conn_id}] ✗ authentication failed for '{username}'"
+            )
+
+        return is_valid
 
     def session_requested(self):
         """When SSH client requests a session"""
@@ -367,6 +395,7 @@ def ensure_host_key(path="ssh_host_key"):
 async def start_server():
     """Start the honeypot SSH server"""
     print(f"[honeypot] starting SSH honeypot on {HOST}:{PORT} ...")
+    print(f"[honeypot] valid credentials: {VALID_USERNAME}:{VALID_PASSWORD}")
     ensure_host_key("ssh_host_key")
     try:
         # NOTE: removed encoding=None so asyncssh operates in normal text (str) mode.

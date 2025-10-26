@@ -1,251 +1,281 @@
-# llm_gen.py
-import logging
+# shophub_db_llm_gen.py
 import os
 import json
 import time
 import asyncio
 import hashlib
+import re
+from typing import Optional
 from dotenv import load_dotenv
-from langchain_core.prompts import PromptTemplate
+
+# Note: these imports assume you have these libraries available in your environment.
+# If the actual package/module names differ in your environment, adjust accordingly.
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Suppress the noisy ALTS warning
-logging.getLogger('absl').setLevel(logging.ERROR)
-
 load_dotenv()
-
-# Configuration
-LLM_CACHE_FILE = "llm_cache.json"
-LLM_CACHE_EXPIRY_SECONDS = 3600  # 1 hour
-# Use a less powerful model for cost/speed, can be upgraded
-LLM_MODEL_NAME = "gemini-2.5-flash"
-
-# Updated prompt to enforce JSON for SELECT and provide better context
-DB_RESPONSE_PROMPT_TEMPLATE = """
-You are a {db_type} database version {persona}.
-Your task is to act as a realistic database engine and respond to the user's query.
-You have access to the following virtual database state:
----
-{db_context}
----
-
-User's query:
-"{query}"
-
-Analyze the query and the database state to generate a realistic response.
-
-**RESPONSE RULES:**
-1.  **For SELECT/SHOW/DESCRIBE queries:** Your response MUST be a JSON object with two keys: "columns" (a list of strings) and "rows" (a list of lists, where each inner list is a row).
-    - For SHOW DATABASES, always return:
-      {{"columns": ["Database"], "rows": [["information_schema"], ["mysql"], ["test"]]}}
-    - For other SELECT/SHOW queries:
-      {{"columns": ["id", "name", "email"], "rows": [[1, "Alice", "a@a.com"], [2, "Bob", "b@b.com"]]}} 
-    - If there are no results, return an empty "rows" list:
-      {{"columns": ["id", "name", "email"], "rows": []}}
-2.  **For DDL/DML (CREATE, INSERT, UPDATE, DELETE, etc.):** Respond with a short, realistic confirmation message like "Query OK, 1 row affected" or "Table created".
-3.  **For errors:** Respond with a realistic error message string, starting with "ERROR". For example: "ERROR 1054 (42S22): Unknown column 'emial' in 'field list'".
-4.  Do NOT add any extra explanations, markdown, or formatting. Only return the JSON object or the single-line string response.
-5.  Never return hexadecimal encoded strings - always use plain text for database names, table names, and values.
-"""
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_KEY:
-    print("[llm_gen] WARNING: GEMINI_API_KEY not set. Set it in .env or env vars.")
+    print("[llm_gen] WARNING: GEMINI_API_KEY not set")
 
-CACHE_PATH = "llm_cache.json"
+CACHE_PATH = "shophub_db_cache.json"
 _cache = {}
 
-# Load cache on import
+# Load cache if it exists
 try:
     if os.path.exists(CACHE_PATH):
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
             _cache = json.load(f)
 except Exception as e:
-    print("[llm_gen] could not load cache:", e)
+    print(f"[llm_gen] cache load error: {e}")
     _cache = {}
 
 
 def _persist_cache():
+    """Persist cache to disk with atomic write to avoid corrupt files."""
     try:
-        with open(CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(_cache, f)
+        tmp_path = CACHE_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(_cache, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, CACHE_PATH)
     except Exception as e:
-        print("[llm_gen] cache save error:", e)
+        print(f"[llm_gen] cache save error: {e}")
 
 
 def _cache_key(prefix: str, key: str) -> str:
+    """Create a deterministic short cache key from arbitrary input."""
     h = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
     return f"{prefix}:{h}"
 
 
-# Banned substrings for security
-_BANNED_SUBSTRS = [
-    "password",
-    "passwd",
-    "PASSWORD",
-    "secret",
-    "SECRET",
-    "PRIVATE KEY",
-    "api_key",
-    "API_KEY",
-    "token",
-    "TOKEN",
-    "credit_card",
-    "ssn",
-    "DROP DATABASE",
-    "'; DROP TABLE",
-    "UNION SELECT",
-    "LOAD_FILE",
-    "INTO OUTFILE",
-    "INTO DUMPFILE",
-    "rm -rf",
-    "sudo ",
-    "dd if=",
-    "curl ",
-    "wget ",
-    "nc ",
-    "exploit",
-    "metasploit",
-]
-
-
 def sanitize(text: str) -> str:
+    """Sanitize output (redact secrets and truncate very long output)."""
     if not isinstance(text, str):
         return ""
+
+    replacements = {
+        "$2b$10$": "$2b$10$[REDACTED]",
+        "txn_": "txn_[REDACTED]",
+        "PAY-": "PAY-[REDACTED]",
+    }
+
     out = text
-    for b in _BANNED_SUBSTRS:
-        out = out.replace(b, "[REDACTED]")
-    # Limit length
-    if len(out) > 8000:
-        out = out[:8000] + "\n...[truncated]"
+    for pattern, replacement in replacements.items():
+        if pattern in out:
+            out = out.replace(pattern, replacement)
+
+    if len(out) > 10000:
+        out = out[:10000] + "\n...[truncated]"
+
     return out
 
 
-def _build_db_prompt(
-    query: str,
-    db_type: str = "mysql",
-    intent: str = None,
-    db_context: str = None,
-    table_hint: str = None,
-    persona: str = None,
+def clean_json_response(text: str) -> str:
+    """
+    Remove markdown code blocks and extra formatting from LLM response and
+    attempt to extract a single JSON object if present.
+
+    Returns cleaned text (JSON string if JSON could be isolated, otherwise original cleaned text).
+    """
+    if not isinstance(text, str):
+        return ""
+
+    # Remove triple-backtick fenced blocks (any language) and inline code fences
+    # Replace fenced blocks with their content (strip fences)
+    text = re.sub(
+        r"```(?:[\s\S]*?\n)?", "", text
+    )  # remove opening ``` and anything up to newline
+    text = re.sub(r"```", "", text)  # remove closing ```
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+
+    # Strip surrounding whitespace
+    text = text.strip()
+
+    # Attempt to extract the first top-level JSON object {...}
+    # Use a simple brace matching: find the first '{' and match braces until balanced.
+    if "{" in text and "}" in text:
+        start = text.find("{")
+        # attempt to find matching closing brace using a counter
+        counter = 0
+        end = -1
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                counter += 1
+            elif text[i] == "}":
+                counter -= 1
+                if counter == 0:
+                    end = i
+                    break
+        if start != -1 and end != -1:
+            candidate = text[start : end + 1]
+            try:
+                # Validate candidate is JSON
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                # fallthrough to returning cleaned text
+                pass
+
+    return text
+
+
+def _build_prompt(
+    query: str, intent: Optional[str] = None, db_context: Optional[str] = None
 ) -> str:
-    """
-    Build a safety-first prompt for database query simulation.
-    """
-    db_name = db_type.upper() if db_type else "SQL"
-    persona_line = (
-        f"You are simulating the output of a {db_name} database server (version: {persona})."
-        if persona
-        else f"You are simulating the output of a {db_name} database server."
-    )
+    """Build the prompt for the LLM to simulate MySQL responses for ShopHub."""
+    prompt = f"""You are simulating a MySQL 8.0 database for the ShopHub e-commerce platform.
 
-    context_line = f"Context: {db_context}" if db_context else ""
-    intent_line = f"Query type: {intent}" if intent else ""
-    table_line = f"Table hint: {table_hint}" if table_hint else ""
+DATABASE CONTEXT:
+{db_context or "ShopHub E-commerce Database"}
 
-    prompt = (
-        f"{persona_line}\n"
-        f"{context_line}\n"
-        f"{intent_line}\n"
-        f"{table_line}\n\n"
-        "IMPORTANT SAFETY RULES (must obey):\n"
-        "1) Produce only harmless simulated database output (query results, table structures, status messages).\n"
-        "2) DO NOT include real passwords, private keys, API keys, credit card numbers, SSNs, or sensitive data.\n"
-        "3) DO NOT include SQL injection payloads, exploit commands, or malicious queries.\n"
-        "4) Keep output realistic and concise. For SELECT queries, return plausible sample data (2-5 rows).\n"
-        "5) For SHOW/DESCRIBE commands, return realistic table/database structures.\n"
-        "6) For administrative queries (GRANT/REVOKE/DROP), return appropriate error messages or success confirmations.\n"
-        "7) Maintain consistency with typical database behavior and error messages.\n"
-        "8) If the query appears malicious (SQL injection, etc.), return an appropriate error message.\n"
-        "9) Format output EXACTLY as the database would show it (with proper column alignment, row counts, etc.).\n"
-        "10) For MySQL, use MySQL-style output. For PostgreSQL, use PostgreSQL-style output.\n\n"
-        f"User query: {query}\n\n"
-        "Produce ONLY the simulated database output — nothing else (no commentary, no analysis).\n"
-        "Format the output exactly as a real database server would display it.\n"
-    )
+USER QUERY:
+{query}
+
+QUERY TYPE: {intent or "read"}
+
+RESPONSE RULES:
+1. For SELECT/SHOW queries: Return ONLY valid JSON with "columns" (list) and "rows" (list of lists)
+   Example: {{"columns": ["id", "name"], "rows": [[1, "Product A"], [2, "Product B"]]}}
+   DO NOT wrap in markdown code blocks or add any extra text.
+
+2. For DESCRIBE/DESC queries:
+   - ONLY return column information that EXISTS in the DATABASE CONTEXT above
+   - Use the EXACT column names from the database schema
+   - Return format: {{"columns": ["Field", "Type", "Null", "Key", "Default", "Extra"], "rows": [...]}}
+
+3. For DDL/DML (CREATE, INSERT, UPDATE, DELETE): Return confirmation message
+   Example: Query OK, 1 row affected
+
+4. For errors: Return ERROR XXXX (SQLSTATE): message
+   Example: ERROR 1146 (42S02): Table 'products' doesn't exist
+
+5. SECURITY:
+   - Never expose real passwords (use $2b$10$[REDACTED] format)
+   - Never expose full credit card numbers
+   - Never expose API keys or tokens
+   - Redact transaction IDs as txn_[REDACTED] or PAY-[REDACTED]
+
+6. DATA GENERATION REQUIREMENTS (VERY IMPORTANT):
+   - For SELECT queries: Generate 20-50 rows of REALISTIC, VARIED data
+   - Make data look like a REAL production e-commerce database
+   - Use realistic names, emails, addresses, product names, prices
+   - Vary the data - don't repeat patterns
+   - Use realistic timestamps (mix of dates from 2024-2025)
+   - Make IDs sequential (1, 2, 3, ...)
+
+7. FORMAT:
+   - For JSON: Valid JSON ONLY, no markdown, no code blocks, no explanations
+   - For messages: Single line only
+   - NEVER use ```json or ``` markers
+   - Column names in SELECT must EXACTLY match the schema in DATABASE CONTEXT
+
+CRITICAL:
+- Your response must be ONLY the JSON object or the message text
+- For SELECT queries, generate AT LEAST 20-30 rows with VARIED, REALISTIC data
+
+Generate the response now:
+"""
     return prompt
 
 
 def _get_llm_client():
+    """Instantiate the Gemini (Google) client wrapper."""
+    # This wrapper call may vary depending on your installed library's API.
+    # Adjust model and kwargs to match your environment if necessary.
     return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        temperature=0.7,
-        max_output_tokens=1024,
+        model="gemini-2.0-flash-exp",
+        temperature=0.3,
+        max_output_tokens=2048,
         api_key=GEMINI_KEY,
     )
 
 
 def _call_gemini_sync(prompt: str) -> str:
-    """Synchronous call to Gemini via LangChain."""
+    """Call Gemini synchronously and return text content. Handles basic exceptions."""
     client = _get_llm_client()
     try:
+        # The exact invocation may vary depending on the wrapper implementation.
+        # Here we assume .invoke takes a list of HumanMessage and returns an object with `.content`.
         resp = client.invoke([HumanMessage(content=prompt)])
-        text = resp.content if hasattr(resp, "content") else str(resp)
+        # resp might be a plain string, or an object. Try to pull content robustly.
+        if hasattr(resp, "content"):
+            # content could be a string or list; handle common cases
+            content = resp.content
+            if isinstance(content, list):
+                # join list segments into one string
+                text = " ".join(map(str, content))
+            else:
+                text = str(content)
+        else:
+            text = str(resp)
+
+        # Clean up the response (remove markdown, extract json if present)
+        text = clean_json_response(text)
+
     except Exception as e:
-        text = f"ERROR: {e}"
+        # Return a standard SQL-like error string for downstream handling
+        text = f"ERROR: Database temporarily unavailable - {e}"
     return sanitize(text)
 
 
 async def generate_db_response_async(
     query: str,
-    db_type: str = "mysql",
-    intent: str = None,
-    db_context: str = None,
-    table_hint: str = None,
-    persona: str = None,
+    intent: Optional[str] = None,
+    db_context: Optional[str] = None,
     force_refresh: bool = False,
 ) -> str:
-    """
-    Async wrapper: returns LLM-generated safe database response string.
-    Uses cache keyed by query+db_type+context.
-    """
-    key_raw = (
-        f"db:{db_type}|query:{query}|ctx:{db_context or ''}|table:{table_hint or ''}"
-    )
-    cache_key = _cache_key("db_resp", key_raw)
+    """Generate database response using LLM (async wrapper). Uses cache unless force_refresh=True."""
+    key_raw = f"query:{query}|intent:{intent}|ctx:{db_context or ''}"
+    cache_key = _cache_key("db", key_raw)
 
     if not force_refresh and cache_key in _cache:
         return _cache[cache_key]
 
-    prompt = _build_db_prompt(
-        query=query,
-        db_type=db_type,
-        intent=intent,
-        db_context=db_context,
-        table_hint=table_hint,
-        persona=persona,
-    )
+    prompt = _build_prompt(query, intent, db_context)
 
-    # Call blocking LLM in thread to avoid blocking event loop
     try:
+        # Run the synchronous LLM call in a thread to avoid blocking the event loop
         out = await asyncio.to_thread(_call_gemini_sync, prompt)
     except Exception as e:
-        out = f"ERROR: LLM call failed: {e}"
+        print(f"[llm_gen] Error during LLM call: {e}")
+        out = "ERROR 1064 (42000): Internal server error"
 
-    # Final sanitize & cache
     out = sanitize(out)
     _cache[cache_key] = out
 
-    # Persist occasionally
-    if int(time.time()) % 10 == 0:
-        _persist_cache()
+    # Persist occasionally to avoid frequent disk writes. We use a time-based simple heuristic.
+    try:
+        if int(time.time()) % 10 == 0:
+            _persist_cache()
+    except Exception:
+        # don't let persistence errors bubble up
+        pass
 
     return out
 
 
-# Sync wrapper if needed
+# Optional convenience synchronous wrapper for callers that want blocking behaviour
 def generate_db_response(
     query: str,
-    db_type: str = "mysql",
-    intent: str = None,
-    db_context: str = None,
-    table_hint: str = None,
-    persona: str = None,
+    intent: Optional[str] = None,
+    db_context: Optional[str] = None,
     force_refresh: bool = False,
 ) -> str:
-    return asyncio.get_event_loop().run_until_complete(
-        generate_db_response_async(
-            query, db_type, intent, db_context, table_hint, persona, force_refresh
-        )
+    """Blocking wrapper around generate_db_response_async"""
+    return asyncio.run(
+        generate_db_response_async(query, intent, db_context, force_refresh)
     )
+
+
+if __name__ == "__main__":
+    # Simple CLI test: read a query from environment or example and print output
+    example_query = os.getenv(
+        "SHOPHUB_TEST_QUERY", "SELECT id, name FROM products LIMIT 5;"
+    )
+    print("Running example query:", example_query)
+    try:
+        result = generate_db_response(example_query)
+        print(result)
+    except Exception as exc:
+        print("[llm_gen] runtime error:", exc)

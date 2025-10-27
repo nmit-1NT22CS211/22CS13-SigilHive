@@ -4,6 +4,7 @@ import json
 import time
 import asyncio
 import hashlib
+import re
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -40,10 +41,34 @@ def _cache_key(prefix: str, key: str) -> str:
     return f"{prefix}:{h}"
 
 
+def clean_llm_output(text: str) -> str:
+    """Remove markdown code blocks and other formatting artifacts from LLM output"""
+    if not isinstance(text, str):
+        return ""
+
+    # Remove markdown code blocks (```html, ```json, ```, etc.)
+    # Pattern: ```language\n content \n```
+    text = re.sub(r"^```[\w]*\n", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n```$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^```[\w]*", "", text)
+    text = re.sub(r"```$", "", text)
+
+    # Remove any remaining triple backticks
+    text = text.replace("```", "")
+
+    # Strip leading/trailing whitespace
+    text = text.strip()
+
+    return text
+
+
 def sanitize(text: str) -> str:
     """Remove sensitive patterns"""
     if not isinstance(text, str):
         return ""
+
+    # First clean markdown artifacts
+    text = clean_llm_output(text)
 
     # Replace sensitive data with placeholders
     replacements = {
@@ -99,6 +124,8 @@ RESPONSE GENERATION RULES:
 1. Generate a complete, realistic HTML/JSON response that ShopHub would return
 2. For status code {status_code}, generate appropriate content
 3. Match the response to the intent: {intent}
+4. ALWAYS generate a response - never refuse or say you cannot generate content
+5. Be creative and realistic - make it look like a real e-commerce site
 
 INTENT-SPECIFIC GUIDELINES:
 - home: Generate attractive homepage with featured products, categories, promotional banners
@@ -108,8 +135,9 @@ INTENT-SPECIFIC GUIDELINES:
 - admin: Show admin login form or dashboard (redirect if not authenticated)
 - api: Return JSON response with appropriate data structure
 - static_page: Return informational content (about us, contact, help)
-- static: Return appropriate content for static resources
+- static: Return appropriate content for static resources (.css, .js files should have realistic content)
 - suspicious: Return error page (403 Forbidden or 404 Not Found)
+- other: Generate appropriate page based on the path
 
 SECURITY RULES:
 - DO NOT include real passwords, API keys, private keys, or sensitive credentials
@@ -124,65 +152,77 @@ STYLING:
 - Include ShopHub logo/branding in header
 - Add footer with links: About, Contact, Help, Terms, Privacy
 
-FORMAT:
-- For HTML pages: Return complete HTML document with <!DOCTYPE html>
+FORMAT REQUIREMENTS:
+- For HTML pages: Return complete HTML document starting with <!DOCTYPE html>
 - For API endpoints: Return valid JSON with appropriate structure
-- For errors: Return styled error page matching ShopHub design
-- For static files (.css, .js): Return appropriate content or empty response
+- For errors (404, 403, 500): Return styled error page matching ShopHub design
+- For CSS files: Return actual CSS code with styles for the website
+- For JavaScript files: Return actual JavaScript code (can be simple/placeholder but should be valid JS)
+- For image requests (.jpg, .png, .gif): Return HTML comment indicating image placeholder
 
-EXAMPLES:
+EXAMPLES BY INTENT:
 
-Home page (status 200):
-- Hero banner with "Welcome to ShopHub"
-- Featured product grid (3-4 products)
-- Category cards (Electronics, Clothing, Home)
-- Call-to-action buttons
-- Search bar in header
+HOME PAGE (status 200):
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ShopHub - Your Online Shopping Destination</title>
+    <style>
+        /* Modern e-commerce styling */
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: 'Segoe UI', sans-serif; background: #f8f9fa; }}
+        /* ... more styles ... */
+    </style>
+</head>
+<body>
+    <header>
+        <nav>Home | Products | Cart | Login</nav>
+    </header>
+    <section class="hero">
+        <h1>Welcome to ShopHub</h1>
+        <p>Your one-stop destination for online shopping</p>
+    </section>
+    <section class="featured-products">
+        <!-- Product cards here -->
+    </section>
+    <footer>&copy; 2025 ShopHub</footer>
+</body>
+</html>
 
-Product listing (status 200):
-- Product grid with images, names, prices
-- Filter sidebar (categories, price range)
-- Sort options
-- Pagination
+PRODUCT PAGE (status 200):
+Generate full product detail page with image placeholder, price, description, add to cart button, reviews section
 
-Product detail (status 200):
-- Large product image
-- Product name, price, description
-- Add to Cart button
-- Quantity selector
-- Customer reviews section
+CART PAGE (status 200):
+Generate shopping cart with items list, subtotal, checkout button
 
-Cart page (status 200):
-- List of cart items with images, names, quantities, prices
-- Subtotal calculation
-- Proceed to Checkout button
-- Continue Shopping link
+API RESPONSE (status 200):
+{{"success": true, "data": {{"products": [...], "total": 10}}, "message": "Success"}}
 
-Login page (status 200):
-- Email and password input fields
-- Login button
-- "Forgot password?" link
-- "Don't have an account? Register" link
+ERROR PAGE (status 404):
+Generate styled 404 page with ShopHub branding, friendly message, link back to home
 
-API response for /api/products (status 200):
-{{"success": true, "products": [{{"id": 1, "name": "Product Name", "price": 99.99}}], "total": 25}}
+CSS FILE REQUEST (status 200):
+/* ShopHub Main Styles */
+body {{ font-family: Arial, sans-serif; margin: 0; padding: 0; }}
+.header {{ background: #2c3e50; color: white; padding: 20px; }}
+/* ... more CSS rules ... */
 
-Error page (status 404):
-- "404 - Page Not Found" heading
-- Friendly message
-- Link back to home
-- ShopHub branding maintained
+JAVASCRIPT FILE REQUEST (status 200):
+// ShopHub Frontend JavaScript
+document.addEventListener('DOMContentLoaded', function() {{
+    // Cart functionality
+    console.log('ShopHub initialized');
+}});
 
-Admin login (status 401 if not auth):
-- "Admin Access Required" heading
-- Username and password fields
-- Secure login form
-- Warning about unauthorized access
+CRITICAL OUTPUT REQUIREMENTS:
+- Output ONLY the raw response content without any markdown formatting
+- DO NOT wrap output in ```html or ``` or any markdown syntax
+- DO NOT include HTTP headers or status codes in the output
+- Return pure HTML, JSON, CSS, or JavaScript content directly
+- Start immediately with the content (<!DOCTYPE html> for HTML, {{ for JSON, etc.)
+- Make it realistic and complete - this is a honeypot, so quality matters!
 
-NOW GENERATE THE RESPONSE:
-Generate ONLY the response body content (HTML, JSON, or text).
-Do not include HTTP headers or status codes in the output.
-Make it realistic, professional, and appropriate for ShopHub e-commerce platform.
+NOW GENERATE THE RESPONSE FOR: {method} {path} (Status: {status_code}, Intent: {intent})
 """
 
     return prompt
@@ -191,7 +231,7 @@ Make it realistic, professional, and appropriate for ShopHub e-commerce platform
 def _get_llm_client():
     return ChatGoogleGenerativeAI(
         model="gemini-2.0-flash-exp",
-        temperature=0.4,
+        temperature=0.7,  # Increased for more variety
         max_output_tokens=4096,
         api_key=GEMINI_KEY,
     )
@@ -203,9 +243,25 @@ def _call_gemini_sync(prompt: str) -> str:
     try:
         resp = client.invoke([HumanMessage(content=prompt)])
         text = resp.content if hasattr(resp, "content") else str(resp)
+
+        # If response is empty or too short, try again with emphasis
+        if not text or len(text.strip()) < 50:
+            print("[llm_gen] Response too short, retrying...")
+            resp = client.invoke(
+                [
+                    HumanMessage(
+                        content=prompt
+                        + "\n\nIMPORTANT: Generate a COMPLETE response with full HTML/JSON content."
+                    )
+                ]
+            )
+            text = resp.content if hasattr(resp, "content") else str(resp)
+
     except Exception as e:
-        text = "<html><body><h1>Error</h1><p>Service temporarily unavailable</p></body></html>"
         print(f"[llm_gen] Gemini error: {e}")
+        # Return minimal error response
+        text = "<html><body><h1>Error</h1><p>Service temporarily unavailable</p></body></html>"
+
     return sanitize(text)
 
 
@@ -226,7 +282,12 @@ async def generate_shophub_response_async(
     cache_key = _cache_key("response", key_raw)
 
     if not force_refresh and cache_key in _cache:
+        print(f"[llm_gen] Cache hit for {method} {path}")
         return _cache[cache_key]
+
+    print(
+        f"[llm_gen] Generating response for {method} {path} (intent: {intent}, status: {status_code})"
+    )
 
     # Build prompt
     prompt = _build_shophub_prompt(
@@ -244,148 +305,25 @@ async def generate_shophub_response_async(
         out = await asyncio.to_thread(_call_gemini_sync, prompt)
     except Exception as e:
         print(f"[llm_gen] Error generating response: {e}")
-        out = generate_fallback_response(path, intent, status_code)
+        # Minimal fallback only for critical errors
+        out = "<html><body><h1>Error</h1><p>Service Error</p></body></html>"
 
     # Sanitize and cache
     out = sanitize(out)
+
+    # Verify output is not empty
+    if not out or len(out.strip()) < 20:
+        print(f"[llm_gen] WARNING: Generated response too short for {path}")
+        out = f"<html><body><h1>ShopHub</h1><p>Content loading...</p></body></html>"
+
     _cache[cache_key] = out
 
     # Persist cache periodically
     if int(time.time()) % 10 == 0:
         _persist_cache()
 
+    print(f"[llm_gen] Generated {len(out)} bytes for {path}")
     return out
-
-
-def generate_fallback_response(path: str, intent: str, status_code: int) -> str:
-    """Generate simple fallback responses when LLM fails"""
-
-    if status_code == 404:
-        return """<!DOCTYPE html>
-<html>
-<head>
-    <title>404 - Page Not Found | ShopHub</title>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #e74c3c; font-size: 48px; margin: 0; }
-        p { color: #666; font-size: 18px; margin: 20px 0; }
-        a { color: #3498db; text-decoration: none; font-weight: bold; }
-        a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>404</h1>
-        <p>Oops! The page you're looking for doesn't exist.</p>
-        <p><a href="/">Return to ShopHub Home</a></p>
-    </div>
-</body>
-</html>"""
-
-    elif status_code == 403:
-        return """<!DOCTYPE html>
-<html>
-<head>
-    <title>403 - Forbidden | ShopHub</title>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #e74c3c; font-size: 48px; margin: 0; }
-        p { color: #666; font-size: 18px; margin: 20px 0; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>403 Forbidden</h1>
-        <p>You don't have permission to access this resource.</p>
-    </div>
-</body>
-</html>"""
-
-    elif intent == "api":
-        return '{"success": false, "error": "Service temporarily unavailable"}'
-
-    else:
-        return """<!DOCTYPE html>
-<html>
-<head>
-    <title>ShopHub - Your Online Shopping Destination</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f8f9fa; }
-        header { background: #2c3e50; color: white; padding: 20px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .header-content { max-width: 1200px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }
-        .logo { font-size: 28px; font-weight: bold; }
-        nav a { color: white; text-decoration: none; margin-left: 30px; }
-        nav a:hover { color: #3498db; }
-        .hero { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 80px 20px; text-align: center; }
-        .hero h1 { font-size: 48px; margin-bottom: 20px; }
-        .hero p { font-size: 20px; margin-bottom: 30px; }
-        .btn { display: inline-block; padding: 15px 30px; background: white; color: #667eea; text-decoration: none; border-radius: 5px; font-weight: bold; }
-        .btn:hover { background: #f0f0f0; }
-        .container { max-width: 1200px; margin: 40px auto; padding: 0 20px; }
-        .product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 30px; margin-top: 40px; }
-        .product-card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
-        .product-card img { width: 100%; height: 200px; object-fit: cover; border-radius: 5px; margin-bottom: 15px; }
-        .product-card h3 { font-size: 18px; margin-bottom: 10px; color: #2c3e50; }
-        .price { font-size: 24px; color: #27ae60; font-weight: bold; margin: 10px 0; }
-        footer { background: #2c3e50; color: white; padding: 40px 20px; margin-top: 60px; text-align: center; }
-    </style>
-</head>
-<body>
-    <header>
-        <div class="header-content">
-            <div class="logo">🛒 ShopHub</div>
-            <nav>
-                <a href="/">Home</a>
-                <a href="/products">Products</a>
-                <a href="/cart">Cart</a>
-                <a href="/login">Login</a>
-            </nav>
-        </div>
-    </header>
-    
-    <div class="hero">
-        <h1>Welcome to ShopHub</h1>
-        <p>Your one-stop destination for online shopping</p>
-        <a href="/products" class="btn">Start Shopping</a>
-    </div>
-    
-    <div class="container">
-        <h2 style="text-align: center; margin-bottom: 20px;">Featured Products</h2>
-        <div class="product-grid">
-            <div class="product-card">
-                <div style="background: #e0e0e0; width: 100%; height: 200px; border-radius: 5px; margin-bottom: 15px;"></div>
-                <h3>Wireless Headphones</h3>
-                <p class="price">$79.99</p>
-                <a href="/product/1" class="btn" style="font-size: 14px; padding: 10px 20px;">View Details</a>
-            </div>
-            <div class="product-card">
-                <div style="background: #e0e0e0; width: 100%; height: 200px; border-radius: 5px; margin-bottom: 15px;"></div>
-                <h3>Smart Watch</h3>
-                <p class="price">$199.99</p>
-                <a href="/product/2" class="btn" style="font-size: 14px; padding: 10px 20px;">View Details</a>
-            </div>
-            <div class="product-card">
-                <div style="background: #e0e0e0; width: 100%; height: 200px; border-radius: 5px; margin-bottom: 15px;"></div>
-                <h3>Laptop Stand</h3>
-                <p class="price">$49.99</p>
-                <a href="/product/3" class="btn" style="font-size: 14px; padding: 10px 20px;">View Details</a>
-            </div>
-        </div>
-    </div>
-    
-    <footer>
-        <p>&copy; 2025 ShopHub. All rights reserved.</p>
-        <p style="margin-top: 10px;">
-            <a href="/about" style="color: white; margin: 0 10px;">About</a>
-            <a href="/contact" style="color: white; margin: 0 10px;">Contact</a>
-            <a href="/help" style="color: white; margin: 0 10px;">Help</a>
-        </p>
-    </footer>
-</body>
-</html>"""
 
 
 # Sync wrapper

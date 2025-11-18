@@ -40,10 +40,15 @@ class HoneypotSession(asyncssh.SSHServerSession):
             # Send ShopHub banner (ensure string)
             banner = f"""
 ╔═══════════════════════════════════════════════════════════╗
+
 ║         Welcome to ShopHub Production Server              ║
+
 ║                                                           ║
+
 ║  WARNING: Unauthorized access is strictly prohibited      ║
+
 ║  All activities are monitored and logged                  ║
+
 ╚═══════════════════════════════════════════════════════════╝
 
 ShopHub v2.3.1 - E-commerce Platform
@@ -307,6 +312,12 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         duration = time.time() - self.start_time
         print(f"[honeypot][{self.session_id}] connection closed after {duration:.2f}s")
 
+        # End session in controller
+        try:
+            controller.end_session(self.session_id)
+        except Exception as e:
+            print(f"[honeypot][{self.session_id}] error ending session: {e}")
+
         if exc:
             print(f"[honeypot][{self.session_id}] connection error: {exc}")
 
@@ -396,19 +407,35 @@ async def start_server():
     """Start the honeypot SSH server"""
     print(f"[honeypot] starting SSH honeypot on {HOST}:{PORT} ...")
     print(f"[honeypot] valid credentials: {VALID_USERNAME}:{VALID_PASSWORD}")
+
     ensure_host_key("ssh_host_key")
+
+    # Start controller background tasks after event loop is ready
     try:
-        # NOTE: removed encoding=None so asyncssh operates in normal text (str) mode.
+        await controller.start_background_tasks()
+    except Exception as e:
+        print(f"[honeypot] warning: background tasks failed to start: {e}")
+
+    try:
         await asyncssh.create_server(
             HoneypotServer,
             HOST,
             PORT,
             server_host_keys=["ssh_host_key"],
         )
-        print(f"[honeypot] listening on {HOST}:{PORT}")
-        await asyncio.Future()  # Run forever
+        print(f"[honeypot] ✅ listening on {HOST}:{PORT}")
+
+        # Run forever
+        await asyncio.Future()
+
     except (OSError, asyncssh.Error) as exc:
         print(f"[honeypot] server failed to start: {exc}")
+    finally:
+        # Clean shutdown
+        try:
+            await controller.stop_background_tasks()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

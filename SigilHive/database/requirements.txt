@@ -1,0 +1,6 @@
+aiomysql
+langchain
+langchain-google-genai
+python-dotenv
+aiofiles
+uvloop

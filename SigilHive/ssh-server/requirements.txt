@@ -1,4 +1,6 @@
 asyncssh
+numpy
 langchain
 langchain-google-genai
 python-dotenv
+aiofiles

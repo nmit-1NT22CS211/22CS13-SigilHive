@@ -1,0 +1,6 @@
+aiohttp
+langchain
+langchain-google-genai
+python-dotenv
+uvloop
+aiofiles

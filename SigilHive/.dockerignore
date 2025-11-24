@@ -1,0 +1,58 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.qodo/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.pytest_cache/
+
+# Environment and secrets
+.env
+*.env.local
+*.env.*.local
+
+# Private keys (these should be mounted as secrets, not baked into images)
+ssh_host_key
+*.pem
+!*_cert.pem
+
+# Lock files and local config
+uv.lock
+.python-version
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache files
+*_cache.json
+llm_cache.json
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+docs/
+
+# Docker files (avoid recursive copy)
+Dockerfile*
+docker-compose*.yaml
+docker-compose*.yml
+
+# OS files
+.DS_Store
+Thumbs.db

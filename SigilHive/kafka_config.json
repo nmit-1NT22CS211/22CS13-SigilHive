@@ -1,0 +1,5 @@
+{
+  "bootstrap_servers": "kafka:9092",
+  "consumer_interval_seconds": 300,
+  "group_id_prefix": "shophub-honeypot"
+}

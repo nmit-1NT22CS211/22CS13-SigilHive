@@ -5,7 +5,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from controller import Controller, SHOPHUB_STRUCTURE
+from .controller import Controller, SHOPHUB_STRUCTURE
+from kafka_manager import HoneypotKafka
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +19,12 @@ VALID_USERNAME = os.getenv("SSH_USERNAME", "shophub")
 VALID_PASSWORD = os.getenv("SSH_PASSWORD", "ShopHub121!")
 
 controller = Controller(persona="shophub-production-server")
+controller.sessions = {} # Initialize sessions dictionary
+
+# Kafka manager for SSH honeypot
+kafka = HoneypotKafka(
+    "ssh", config_path=os.getenv("KAFKA_CONFIG_PATH", "kafka_config.json")
+)
 
 
 class HoneypotSession(asyncssh.SSHServerSession):
@@ -35,6 +42,7 @@ class HoneypotSession(asyncssh.SSHServerSession):
 
     def connection_made(self, chan):
         self._chan = chan
+        controller.sessions[self.session_id] = {"transport": chan} # Store transport in controller.sessions
         print(f"[honeypot][{self.session_id}] connection established")
         try:
             # Send ShopHub banner (ensure string)
@@ -229,6 +237,39 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
             "elapsed": time.time() - self.start_time,
         }
 
+        # publish SSH event to Kafka (DB and HTTP topics)
+        try:
+            # The original instruction had `remote_addr` here, but it's not available directly in `handle_command`.
+            # Assuming `peer_ip` is available in `connection_made` or can be passed.
+            # For now, I'll omit it as the original snippet in prompt also commented `peer_ip` as 'if available'.
+            # If it's crucial, we'd need to store it in the session object earlier.
+            peer_ip = self._chan.get_extra_info('peername')[0] if self._chan and self._chan.get_extra_info('peername') else 'unknown'
+
+            kafka.send(
+                "SSHtoDB",
+                {
+                    "target": "database",
+                    "event_type": "ssh_command",
+                    "session_id": self.session_id,
+                    "command": cmd,
+                    "result_preview": (action.get("response", "")[:400] if action.get("response") else ""),
+                    "remote_addr": peer_ip,
+                    "current_dir": self.current_dir,
+                },
+            )
+            kafka.send(
+                "SSHtoHTTP",
+                {
+                    "target": "http",
+                    "event_type": "ssh_command",
+                    "session_id": self.session_id,
+                    "command": cmd,
+                    "result_preview": (action.get("response", "")[:400] if action.get("response") else ""),
+                },
+            )
+        except Exception as e:
+            print(f"[honeypot][{self.session_id}] Kafka send error: {e}")
+
         try:
             action = await controller.get_action_for_session(self.session_id, event)
         except Exception as e:
@@ -312,6 +353,10 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         duration = time.time() - self.start_time
         print(f"[honeypot][{self.session_id}] connection closed after {duration:.2f}s")
 
+        # Remove session from controller
+        if self.session_id in controller.sessions:
+            del controller.sessions[self.session_id]
+
         # End session in controller
         try:
             controller.end_session(self.session_id)
@@ -324,6 +369,9 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
 
 class HoneypotServer(asyncssh.SSHServer):
     """Custom SSH server class that creates sessions"""
+
+    def __init__(self):
+        self.sessions = {} # Store active sessions by ID for control messages
 
     def connection_made(self, conn):
         self.conn_id = str(uuid.uuid4())[:8]
@@ -378,7 +426,8 @@ class HoneypotServer(asyncssh.SSHServer):
     def session_requested(self):
         """When SSH client requests a session"""
         session_id = str(uuid.uuid4())[:8]
-        return HoneypotSession(session_id)
+        session = HoneypotSession(session_id)
+        return session
 
 
 def ensure_host_key(path="ssh_host_key"):
@@ -408,7 +457,7 @@ async def start_server():
     print(f"[honeypot] starting SSH honeypot on {HOST}:{PORT} ...")
     print(f"[honeypot] valid credentials: {VALID_USERNAME}:{VALID_PASSWORD}")
 
-    ensure_host_key("ssh_host_key")
+    ensure_host_key("/app/ssh-server/ssh_host_key")
 
     # Start controller background tasks after event loop is ready
     try:
@@ -416,12 +465,63 @@ async def start_server():
     except Exception as e:
         print(f"[honeypot] warning: background tasks failed to start: {e}")
 
+    # start kafka consumer loop
+    try:
+        loop = asyncio.get_running_loop()
+
+        async def ssh_kafka_handler(msg):
+            try:
+                print(f"[ssh][kafka] received: {msg}")
+                sid = msg.get("session_id")
+                if sid:
+                    # Generic message logging
+                    if hasattr(controller, "sessions"):
+                        sess = controller.sessions.setdefault(sid, {})
+                        sess.setdefault("cross_messages", []).append(msg)
+
+                    # Specific control action: disconnect session
+                    if msg.get("event_type") == "control" and msg.get("action") == "disconnect":
+                        target_session = msg.get("session_id")
+                        if target_session:
+                            # Access the server instance (assuming it's available in this scope)
+                            # This part is tricky if server is not directly accessible.
+                            # We might need to pass the server instance to the handler or use a global.
+                            # For now, let's assume `server_instance` is accessible.
+                            # A better approach would be to have a shared session registry.
+                            # For simplicity, let's try to access it via HoneypotServer's sessions dict.
+                            # This requires a reference to the HoneypotServer instance.
+                            # Since server is created inside create_server, we need to adapt.
+                            # Let's use a simpler approach for now by directly interacting with
+                            # the controller.sessions if it stores the transport.
+                            # If controller.sessions is to store the actual HoneypotSession object
+                            # we need to make sure it's stored there.
+
+                            # For now, let's assume controller.sessions might store enough info
+                            # to find the channel, or we need to refine how sessions are stored.
+                            # As per instruction, `s = controller.sessions.get(target_session)`
+                            # and `t = s["transport"]` is expected.
+
+                            s = controller.sessions.get(target_session)
+                            if s and "transport" in s:
+                                t = s["transport"]
+                                print(f"[ssh][kafka] Disconnecting session {target_session}")
+                                t.close()
+                            else:
+                                print(f"[ssh][kafka] Session {target_session} not found or no transport.")
+
+            except Exception as e:
+                print(f"[ssh][kafka] handler error: {e}")
+
+        loop.create_task(kafka.start_consumer_loop(ssh_kafka_handler))
+    except Exception:
+        pass
+
     try:
         await asyncssh.create_server(
             HoneypotServer,
             HOST,
             PORT,
-            server_host_keys=["ssh_host_key"],
+            server_host_keys=["/app/ssh-server/ssh_host_key"],
         )
         print(f"[honeypot] ✅ listening on {HOST}:{PORT}")
 

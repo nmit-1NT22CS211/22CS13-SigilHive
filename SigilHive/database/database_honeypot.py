@@ -7,24 +7,28 @@ import time
 import hashlib
 import json
 from datetime import datetime, timezone
-from controller import ShopHubDBController
+from .controller import ShopHubDBController
+from kafka_manager import HoneypotKafka
+import os
 
 # Configuration
 MYSQL_HOST = "0.0.0.0"
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "2222"))
-
-# Set to True to require passwords, False to accept without password (for testing)
 REQUIRE_PASSWORD = os.getenv("REQUIRE_PASSWORD", "false").lower() == "true"
 
-# Valid credentials for the honeypot
+# Valid credentials
 VALID_CREDENTIALS = {
     "shophub_app": "shophub123",
     "root": "rootpass",
     "admin": "admin123",
 }
 
-# ShopHub MySQL controller
 controller = ShopHubDBController()
+
+# Kafka manager for Database honeypot
+kafka = HoneypotKafka(
+    "database", config_path=os.getenv("KAFKA_CONFIG_PATH", "kafka_config.json")
+)
 
 
 class MySQLProtocol(asyncio.Protocol):
@@ -55,18 +59,15 @@ class MySQLProtocol(asyncio.Protocol):
         server_version = b"8.0.33-ShopHub\x00"
         connection_id = struct.pack("<I", hash(self.session_id) & 0xFFFFFFFF)
 
-        # Generate auth salt (20 bytes total, split into two parts)
         self.auth_salt = os.urandom(20)
         auth_data_part1 = self.auth_salt[:8]
         auth_data_part2 = self.auth_salt[8:] + b"\x00"
 
         filler = b"\x00"
-        # Capability flags - enable more authentication options
-        # CLIENT_LONG_PASSWORD | CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH
         capability_flags_1 = struct.pack("<H", 0xF7FF)
-        charset = struct.pack("B", 0x21)  # utf8_general_ci
+        charset = struct.pack("B", 0x21)
         status_flags = struct.pack("<H", 0x0002)
-        capability_flags_2 = struct.pack("<H", 0x8000)  # CLIENT_PLUGIN_AUTH
+        capability_flags_2 = struct.pack("<H", 0x8000)
         auth_data_len = struct.pack("B", 21)
         reserved = b"\x00" * 10
         auth_plugin = b"mysql_native_password\x00"
@@ -93,36 +94,19 @@ class MySQLProtocol(asyncio.Protocol):
         """Calculate MySQL native password hash"""
         if not password:
             return b""
-
-        # SHA1(password)
         stage1 = hashlib.sha1(password.encode()).digest()
-        # SHA1(SHA1(password))
         stage2 = hashlib.sha1(stage1).digest()
-        # SHA1(salt + SHA1(SHA1(password)))
         stage3 = hashlib.sha1(salt + stage2).digest()
-        # XOR SHA1(password) with stage3
         result = bytes(a ^ b for a, b in zip(stage1, stage3))
         return result
 
     def verify_password(self, username: str, auth_response: bytes) -> bool:
         """Verify password against valid credentials"""
         if username not in VALID_CREDENTIALS:
-            print(f"[mysql][{self.session_id}] unknown user: {username}")
             return False
-
         expected_password = VALID_CREDENTIALS[username]
         expected_hash = self.mysql_native_password(expected_password, self.auth_salt)
-
-        is_valid = auth_response == expected_hash
-
-        if not is_valid:
-            print(f"[mysql][{self.session_id}] password mismatch")
-            print(f"[mysql][{self.session_id}]   expected: {expected_hash.hex()}")
-            print(f"[mysql][{self.session_id}]   received: {auth_response.hex()}")
-        else:
-            print(f"[mysql][{self.session_id}] ✓ password verified")
-
-        return is_valid
+        return auth_response == expected_hash
 
     def send_packet(self, payload, sequence_id):
         """Send MySQL packet"""
@@ -153,72 +137,39 @@ class MySQLProtocol(asyncio.Protocol):
         self.send_packet(payload, sequence_id)
 
     def send_text_result(self, result_data, sequence_id=1):
-        """Send result set"""
+        """Send result set - FIXED VERSION"""
         try:
-            print(f"[mysql][{self.session_id}] === SEND_TEXT_RESULT DEBUG ===")
-            print(f"[mysql][{self.session_id}] Input type: {type(result_data)}")
+            print(f"[mysql][{self.session_id}] === SEND_TEXT_RESULT ===")
 
-            # Normalize result data
+            # Normalize result_data to dict with columns and rows
             if isinstance(result_data, str):
-                print(
-                    f"[mysql][{self.session_id}] Input is STRING, first 200 chars: {result_data[:200]}"
-                )
-                try:
-                    # Try to parse as JSON first
-                    if result_data.strip().startswith("{"):
-                        parsed = json.loads(result_data)
-                        print(
-                            f"[mysql][{self.session_id}] Parsed STRING to JSON: {list(parsed.keys())}"
-                        )
-                        if isinstance(parsed, dict):
-                            if "columns" in parsed and "rows" in parsed:
-                                # It's already in the right format
-                                print(
-                                    f"[mysql][{self.session_id}] Found columns and rows!"
-                                )
-                                result_data = parsed
-                            elif "text" in parsed:
-                                result_data = {
-                                    "columns": ["result"],
-                                    "rows": [[parsed["text"]]],
-                                }
-                            else:
-                                result_data = {
-                                    "columns": ["result"],
-                                    "rows": [[result_data]],
-                                }
-                        else:
-                            result_data = {
-                                "columns": ["result"],
-                                "rows": [[result_data]],
-                            }
-                    else:
+                result_data = result_data.strip()
+                if result_data.startswith("{"):
+                    try:
+                        result_data = json.loads(result_data)
+                    except:
                         result_data = {"columns": ["result"], "rows": [[result_data]]}
-                except json.JSONDecodeError as e:
-                    print(f"[mysql][{self.session_id}] JSON decode error: {e}")
+                else:
                     result_data = {"columns": ["result"], "rows": [[result_data]]}
-            elif isinstance(result_data, dict):
-                print(
-                    f"[mysql][{self.session_id}] Input is DICT with keys: {list(result_data.keys())}"
-                )
-                if "text" in result_data and "columns" not in result_data:
-                    result_data = {
-                        "columns": ["result"],
-                        "rows": [[result_data["text"]]],
-                    }
-                elif not ("columns" in result_data and "rows" in result_data):
-                    result_data = {"columns": ["result"], "rows": [[str(result_data)]]}
-            else:
+
+            if not isinstance(result_data, dict):
                 result_data = {"columns": ["result"], "rows": [[str(result_data)]]}
 
-            columns = result_data.get("columns", ["result"])
-            rows = result_data.get("rows", [])
+            # Handle 'text' key
+            if "text" in result_data and "columns" not in result_data:
+                result_data = {"columns": ["result"], "rows": [[result_data["text"]]]}
+
+            # Ensure we have columns and rows
+            if "columns" not in result_data or "rows" not in result_data:
+                result_data = {"columns": ["result"], "rows": [[str(result_data)]]}
+
+            columns = result_data["columns"]
+            rows = result_data["rows"]
             num_columns = len(columns)
 
             print(
-                f"[mysql][{self.session_id}] Final: {num_columns} columns, {len(rows)} rows"
+                f"[mysql][{self.session_id}] Sending {num_columns} columns, {len(rows)} rows"
             )
-            print(f"[mysql][{self.session_id}] Columns: {columns}")
 
             current_seq = sequence_id
 
@@ -256,15 +207,16 @@ class MySQLProtocol(asyncio.Protocol):
                 row_payload = b""
                 for value in row:
                     if value is None:
-                        value_str = ""
+                        row_payload += b"\xfb"  # NULL indicator
                     else:
                         value_str = str(value)
-                    row_payload += self.encode_length_string(value_str.encode())
+                        row_payload += self.encode_length_string(value_str.encode())
                 self.send_packet(row_payload, current_seq)
                 current_seq += 1
 
             # EOF after rows
             self.send_packet(eof_packet, current_seq)
+            print(f"[mysql][{self.session_id}] ✓ Result set sent successfully")
 
         except Exception as e:
             print(f"[mysql][{self.session_id}] Error in send_text_result: {e}")
@@ -340,268 +292,118 @@ class MySQLProtocol(asyncio.Protocol):
             return
 
         if not self.authenticated:
-            # Check if this is a response to AuthSwitchRequest
+            # Handle auth switch response
             if self.auth_switch_sent:
-                print(f"[mysql][{self.session_id}] === AUTH SWITCH RESPONSE ===")
-                print(f"[mysql][{self.session_id}] Length: {len(payload)} bytes")
-                print(f"[mysql][{self.session_id}] Hex: {payload.hex()}")
-
-                # The response should be just the auth data (20 bytes for mysql_native_password)
                 if len(payload) == 20:
                     auth_response = payload
-                    print(
-                        f"[mysql][{self.session_id}] Auth response: {auth_response.hex()}"
-                    )
-
                     if self.verify_password(self.username, auth_response):
                         self.authenticated = True
                         self.auth_switch_sent = False
-                        # Set default database to shophub
                         controller.db_state.use_database("shophub")
-                        print(
-                            f"[mysql][{self.session_id}] ✓✓✓ AUTHENTICATION SUCCESSFUL ✓✓✓"
-                        )
-                        print(
-                            f"[mysql][{self.session_id}] Default database set to: shophub"
-                        )
+                        print(f"[mysql][{self.session_id}] ✓ AUTH SUCCESS")
                         self.send_ok_packet(sequence_id + 1)
                     else:
-                        print(
-                            f"[mysql][{self.session_id}] ✗✗✗ AUTHENTICATION FAILED ✗✗✗"
-                        )
+                        print(f"[mysql][{self.session_id}] ✗ AUTH FAILED")
                         self.send_error_packet(
                             1045,
                             "28000",
-                            f"Access denied for user '{self.username}'@'localhost' (using password: YES)",
+                            f"Access denied for user '{self.username}'",
                             sequence_id + 1,
                         )
                         await asyncio.sleep(0.5)
                         self.transport.close()
-                else:
-                    print(
-                        f"[mysql][{self.session_id}] Unexpected auth response length: {len(payload)}"
-                    )
-                    self.send_error_packet(
-                        1045, "28000", "Access denied", sequence_id + 1
-                    )
-                    await asyncio.sleep(0.5)
-                    self.transport.close()
                 return
 
-            # Parse HandshakeResponse packet
+            # Parse HandshakeResponse
             try:
-                print(f"[mysql][{self.session_id}] === AUTH PACKET DEBUG ===")
-                print(f"[mysql][{self.session_id}] Length: {len(payload)} bytes")
-                print(
-                    f"[mysql][{self.session_id}] First 80 bytes hex:\n{payload[:80].hex()}"
-                )
-
-                # Try to parse the packet
-                pos = 0
-
-                # Client capability flags (4 bytes)
-                if len(payload) < 32:
-                    raise Exception(f"Packet too short: {len(payload)} bytes")
-
-                capability_flags = struct.unpack("<I", payload[pos : pos + 4])[0]
-                pos += 4
-
-                # Max packet size (4 bytes)
-                max_packet = struct.unpack("<I", payload[pos : pos + 4])[0]
-                pos += 4
-
-                # Charset (1 byte)
-                charset = payload[pos]
-                pos += 1
-
-                # Reserved (23 bytes)
-                pos += 23
-
-                # Now at position 32 - username should start here
-                print(
-                    f"[mysql][{self.session_id}] Position 32, looking for username..."
-                )
-
-                # Username (null-terminated)
-                username_start = pos
+                pos = 32  # Skip capability flags, max packet, charset, reserved
                 username_end = payload.find(b"\x00", pos)
-
                 if username_end == -1:
                     raise Exception("Username not null-terminated")
 
-                self.username = payload[username_start:username_end].decode(
+                self.username = payload[pos:username_end].decode(
                     "utf-8", errors="ignore"
                 )
                 pos = username_end + 1
 
-                print(f"[mysql][{self.session_id}] Username: '{self.username}'")
-                print(f"[mysql][{self.session_id}] Position after username: {pos}")
-                print(
-                    f"[mysql][{self.session_id}] Remaining bytes: {len(payload) - pos}"
-                )
-
                 if pos >= len(payload):
-                    print(f"[mysql][{self.session_id}] No auth data - empty password")
-                    self.send_error_packet(
-                        1045,
-                        "28000",
-                        f"Access denied for user '{self.username}'@'localhost' (using password: NO)",
-                        sequence_id + 1,
-                    )
-                    await asyncio.sleep(0.5)
-                    self.transport.close()
-                    return
+                    if not REQUIRE_PASSWORD and self.username in VALID_CREDENTIALS:
+                        self.authenticated = True
+                        controller.db_state.use_database("shophub")
+                        print(
+                            f"[mysql][{self.session_id}] ✓ AUTH SUCCESS (no password)"
+                        )
+                        self.send_ok_packet(sequence_id + 1)
+                        return
+                    else:
+                        self.send_error_packet(
+                            1045, "28000", "Access denied", sequence_id + 1
+                        )
+                        await asyncio.sleep(0.5)
+                        self.transport.close()
+                        return
 
-                # Auth response length
                 auth_len_byte = payload[pos]
-                print(
-                    f"[mysql][{self.session_id}] Auth length byte at pos {pos}: 0x{auth_len_byte:02x} ({auth_len_byte})"
-                )
+                capability_flags = struct.unpack("<I", payload[:4])[0]
 
-                # Check if CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA is set
-                if (
-                    capability_flags & 0x00200000
-                ):  # CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
-                    print(f"[mysql][{self.session_id}] Using length-encoded auth data")
-                    # Length-encoded integer
+                if capability_flags & 0x00200000:
                     if auth_len_byte < 251:
                         auth_response_len = auth_len_byte
                         pos += 1
-                    elif auth_len_byte == 0xFC:
-                        auth_response_len = struct.unpack(
-                            "<H", payload[pos + 1 : pos + 3]
-                        )[0]
-                        pos += 3
-                    elif auth_len_byte == 0xFD:
-                        auth_response_len = struct.unpack(
-                            "<I", payload[pos + 1 : pos + 4] + b"\x00"
-                        )[0]
-                        pos += 4
                     else:
                         auth_response_len = 0
                         pos += 1
                 else:
-                    # Fixed 1-byte length
-                    print(f"[mysql][{self.session_id}] Using 1-byte auth data length")
                     auth_response_len = auth_len_byte
                     pos += 1
 
-                print(
-                    f"[mysql][{self.session_id}] Auth response length: {auth_response_len}"
-                )
-                print(f"[mysql][{self.session_id}] Current position: {pos}")
-
                 if auth_response_len == 0:
-                    print(
-                        f"[mysql][{self.session_id}] Empty auth response - checking for plugin auth"
-                    )
-
-                    # Check if there's a database name and plugin name after
-                    # Format: [auth_len=0][database][plugin_name]
+                    # Check for plugin auth
                     remaining_data = payload[pos:]
-                    print(
-                        f"[mysql][{self.session_id}] Remaining data after auth_len: {remaining_data.hex()}"
-                    )
-
                     if len(remaining_data) > 0:
-                        # Try to read database name (null-terminated)
-                        db_end = remaining_data.find(b"\x00")
-                        if db_end != -1 and db_end > 0:
-                            db_name = remaining_data[:db_end].decode(
-                                "utf-8", errors="ignore"
-                            )
-                            print(f"[mysql][{self.session_id}] Database: '{db_name}'")
-                            remaining_data = remaining_data[db_end + 1 :]
-
-                        # Try to read plugin name
-                        if len(remaining_data) > 0:
-                            plugin_end = remaining_data.find(b"\x00")
-                            if plugin_end != -1:
-                                plugin_name = remaining_data[:plugin_end].decode(
-                                    "utf-8", errors="ignore"
-                                )
-                                print(
-                                    f"[mysql][{self.session_id}] Plugin: '{plugin_name}'"
-                                )
-
-                                # Send AuthSwitchRequest for mysql_native_password
-                                print(
-                                    f"[mysql][{self.session_id}] Sending auth switch request"
-                                )
-                                self.auth_switch_sent = True
-                                auth_switch = (
-                                    b"\xfe"  # Auth switch request
-                                    + b"mysql_native_password\x00"
-                                    + self.auth_salt
-                                    + b"\x00"
-                                )
-                                self.send_packet(auth_switch, sequence_id + 1)
-                                return
-
-                    # FOR TESTING: Accept any user without password (if REQUIRE_PASSWORD is False)
-                    if not REQUIRE_PASSWORD:
-                        print(
-                            f"[mysql][{self.session_id}] === PASSWORD NOT REQUIRED (TESTING MODE) ==="
+                        # Send AuthSwitchRequest
+                        self.auth_switch_sent = True
+                        auth_switch = (
+                            b"\xfe"
+                            + b"mysql_native_password\x00"
+                            + self.auth_salt
+                            + b"\x00"
                         )
-                        if self.username in VALID_CREDENTIALS:
-                            self.authenticated = True
-                            # Set default database to shophub
-                            controller.db_state.use_database("shophub")
-                            print(
-                                f"[mysql][{self.session_id}] ✓✓✓ AUTHENTICATION SUCCESSFUL (NO PASSWORD) ✓✓✓"
-                            )
-                            print(
-                                f"[mysql][{self.session_id}] Default database set to: shophub"
-                            )
-                            self.send_ok_packet(sequence_id + 1)
-                            return
+                        self.send_packet(auth_switch, sequence_id + 1)
+                        return
 
-                    # Reject - no password provided
-                    print(
-                        f"[mysql][{self.session_id}] No password provided and REQUIRE_PASSWORD={REQUIRE_PASSWORD}"
-                    )
+                    if not REQUIRE_PASSWORD and self.username in VALID_CREDENTIALS:
+                        self.authenticated = True
+                        controller.db_state.use_database("shophub")
+                        print(
+                            f"[mysql][{self.session_id}] ✓ AUTH SUCCESS (no password)"
+                        )
+                        self.send_ok_packet(sequence_id + 1)
+                        return
+
                     self.send_error_packet(
-                        1045,
-                        "28000",
-                        f"Access denied for user '{self.username}'@'localhost' (using password: NO)",
-                        sequence_id + 1,
+                        1045, "28000", "Access denied", sequence_id + 1
                     )
                     await asyncio.sleep(0.5)
                     self.transport.close()
                     return
 
                 if pos + auth_response_len > len(payload):
-                    print(
-                        f"[mysql][{self.session_id}] Auth response would exceed packet"
-                    )
-                    print(
-                        f"[mysql][{self.session_id}] Need: {pos + auth_response_len}, Have: {len(payload)}"
-                    )
                     raise Exception("Auth response exceeds packet")
 
                 auth_response = payload[pos : pos + auth_response_len]
-                print(
-                    f"[mysql][{self.session_id}] Auth response ({len(auth_response)} bytes): {auth_response.hex()}"
-                )
 
-                # Verify password
                 if self.verify_password(self.username, auth_response):
                     self.authenticated = True
-                    # Set default database to shophub
                     controller.db_state.use_database("shophub")
-                    print(
-                        f"[mysql][{self.session_id}] ✓✓✓ AUTHENTICATION SUCCESSFUL ✓✓✓"
-                    )
-                    print(
-                        f"[mysql][{self.session_id}] Default database set to: shophub"
-                    )
+                    print(f"[mysql][{self.session_id}] ✓ AUTH SUCCESS")
                     self.send_ok_packet(sequence_id + 1)
                 else:
-                    print(f"[mysql][{self.session_id}] ✗✗✗ AUTHENTICATION FAILED ✗✗✗")
+                    print(f"[mysql][{self.session_id}] ✗ AUTH FAILED")
                     self.send_error_packet(
                         1045,
                         "28000",
-                        f"Access denied for user '{self.username}'@'localhost' (using password: YES)",
+                        f"Access denied for user '{self.username}'",
                         sequence_id + 1,
                     )
                     await asyncio.sleep(0.5)
@@ -609,9 +411,6 @@ class MySQLProtocol(asyncio.Protocol):
 
             except Exception as e:
                 print(f"[mysql][{self.session_id}] Auth error: {e}")
-                import traceback
-
-                traceback.print_exc()
                 self.send_error_packet(1045, "28000", "Access denied", sequence_id + 1)
                 await asyncio.sleep(0.5)
                 self.transport.close()
@@ -673,7 +472,31 @@ class MySQLProtocol(asyncio.Protocol):
                 "elapsed": time.time() - self.start_time,
                 "username": self.username,
             }
-
+            # Publish minimal DB event to Kafka for other honeypots
+            try:
+                kafka.send(
+                    "DBtoSSH",
+                    {
+                        "target": "ssh", # Added target
+                        "event_type": "db_query",
+                        "session_id": self.session_id,
+                        "username": self.username,
+                        "query": query,
+                        "query_count": self.query_count, # Added query_count
+                        "elapsed": time.time() - self.start_time # Added elapsed
+                    },
+                )
+                kafka.send(
+                    "DBtoHTTP",
+                    {
+                        "target": "http", # Added target
+                        "event_type": "db_query",
+                        "session_id": self.session_id,
+                        "query": query,
+                    },
+                )
+            except Exception as e:
+                print(f"[mysql][{self.session_id}] Kafka send error: {e}")
             try:
                 action = await controller.get_action_for_query(self.session_id, event)
             except Exception as e:
@@ -693,73 +516,51 @@ class MySQLProtocol(asyncio.Protocol):
                 await asyncio.sleep(delay)
 
             response = action.get("response", {})
-
-            # DEBUG: Print response type and content
-            print(f"[mysql][{self.session_id}] === RESPONSE DEBUG ===")
-            print(f"[mysql][{self.session_id}] Response type: {type(response)}")
-            if isinstance(response, str):
-                print(f"[mysql][{self.session_id}] Response is STRING")
-                print(f"[mysql][{self.session_id}] First 300 chars: {response[:300]}")
-            elif isinstance(response, dict):
-                print(f"[mysql][{self.session_id}] Response is DICT")
-                print(f"[mysql][{self.session_id}] Keys: {list(response.keys())}")
-                if "columns" in response:
-                    print(
-                        f"[mysql][{self.session_id}] Has 'columns': {response['columns']}"
-                    )
-                if "rows" in response:
-                    print(
-                        f"[mysql][{self.session_id}] Has 'rows': {len(response['rows'])} rows"
-                    )
-                if "text" in response:
-                    print(
-                        f"[mysql][{self.session_id}] Has 'text': {response['text'][:100]}"
-                    )
-
-            # Parse string responses that might be JSON
-            if isinstance(response, str):
-                response = response.strip()
-                # Try to parse as JSON if it looks like JSON
-                if response.startswith("{"):
-                    try:
-                        parsed = json.loads(response)
-                        print(
-                            f"[mysql][{self.session_id}] Successfully parsed STRING as JSON"
-                        )
-                        print(
-                            f"[mysql][{self.session_id}] Parsed keys: {list(parsed.keys())}"
-                        )
-                        response = parsed
-                    except json.JSONDecodeError as e:
-                        print(f"[mysql][{self.session_id}] JSON parse error: {e}")
-                        response = {"text": response}
-                else:
-                    response = {"text": response}
-            elif not isinstance(response, dict):
-                response = {"text": str(response)}
-
-            response_text = (
-                response.get("text", "")
-                if isinstance(response, dict)
-                else str(response)
-            )
-
             next_seq = sequence_id + 1
             q_upper = query.upper().strip()
 
-            if response_text.startswith("ERROR"):
-                self.send_error_packet(1064, "42000", response_text, next_seq)
-            elif "Database changed" in response_text:
-                self.send_ok_packet(next_seq)
-            elif "Query OK" in response_text:
-                affected = 1 if "1 row" in response_text else 0
-                self.send_ok_packet(next_seq, affected_rows=affected)
-            elif q_upper.startswith(("SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN")):
-                # For SELECT queries, prefer columns/rows format
-                print(f"[mysql][{self.session_id}] Sending result set for SELECT query")
-                self.send_text_result(response, next_seq)
-            else:
-                self.send_ok_packet(next_seq)
+            # Handle string responses
+            if isinstance(response, str):
+                response_text = response
+                if response_text.startswith("ERROR"):
+                    self.send_error_packet(1064, "42000", response_text, next_seq)
+                elif "Database changed" in response_text:
+                    self.send_ok_packet(next_seq)
+                elif "Query OK" in response_text:
+                    affected = 1 if "1 row" in response_text else 0
+                    self.send_ok_packet(next_seq, affected_rows=affected)
+                else:
+                    # Convert to result set
+                    self.send_text_result(
+                        {"columns": ["result"], "rows": [[response_text]]}, next_seq
+                    )
+                return
+
+            # Handle dict responses
+            if isinstance(response, dict):
+                # Check if it has 'text' key
+                if "text" in response and "columns" not in response:
+                    response_text = response["text"]
+                    if response_text.startswith("ERROR"):
+                        self.send_error_packet(1064, "42000", response_text, next_seq)
+                    elif "Database changed" in response_text:
+                        self.send_ok_packet(next_seq)
+                    elif "Query OK" in response_text:
+                        affected = 1 if "1 row" in response_text else 0
+                        self.send_ok_packet(next_seq, affected_rows=affected)
+                    else:
+                        self.send_text_result(
+                            {"columns": ["result"], "rows": [[response_text]]}, next_seq
+                        )
+                    return
+
+                # It's a result set with columns and rows
+                if "columns" in response and "rows" in response:
+                    self.send_text_result(response, next_seq)
+                    return
+
+            # Default: send as OK
+            self.send_ok_packet(next_seq)
 
         except Exception as e:
             print(f"[mysql][{self.session_id}] query error: {e}")
@@ -781,6 +582,35 @@ class MySQLProtocol(asyncio.Protocol):
 
 async def main():
     loop = asyncio.get_running_loop()
+
+    async def db_kafka_handler(msg):
+        try:
+            print(f"[db][kafka] received: {msg}")
+            sid = msg.get("session_id")
+            if sid and hasattr(controller, "sessions"):
+                sess = controller.sessions.setdefault(sid, {})
+                sess.setdefault("cross_messages", []).append(msg)
+
+            # For example, if http told db to create a decoy table:
+            if msg.get("event_type") == "control" and msg.get("action") == "create_table":
+                table = msg.get("table")
+                if table:
+                    try:
+                        if hasattr(controller.db_state, "create_table_like_decoy"):
+                            controller.db_state.create_table_like_decoy(table)
+                            print(f"[db][kafka] Created decoy table: {table}")
+                        else:
+                            print(f"[db][kafka] controller.db_state does not have create_table_like_decoy method. Logging table creation request: {table}")
+                    except Exception as e:
+                        print(f"[db][kafka] Error creating decoy table: {e}")
+        except Exception as e:
+            print(f"[db][kafka] handler error: {e}")
+
+    # start kafka consumer loop
+    try:
+        loop.create_task(kafka.start_consumer_loop(db_kafka_handler))
+    except Exception:
+        pass
 
     print("[honeypot] Starting ShopHub MySQL Honeypot")
     print("[honeypot] Database: ShopHub E-commerce")

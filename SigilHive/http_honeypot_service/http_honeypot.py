@@ -5,7 +5,8 @@ import ssl
 import uuid
 import time
 from datetime import datetime, timezone
-from controller import ShopHubController
+from .controller import ShopHubController
+from kafka_manager import HoneypotKafka
 
 # Configuration
 HTTPS_HOST = "0.0.0.0"
@@ -13,6 +14,11 @@ HTTPS_PORT = int(os.getenv("HTTPS_PORT", "8443"))
 
 # Use ShopHub controller
 controller = ShopHubController()
+
+# Kafka manager for HTTP honeypot
+kafka = HoneypotKafka(
+    "http", config_path=os.getenv("KAFKA_CONFIG_PATH", "kafka_config.json")
+)
 
 
 class HTTPSProtocol(asyncio.Protocol):
@@ -111,6 +117,35 @@ class HTTPSProtocol(asyncio.Protocol):
             "elapsed": time.time() - self.start_time,
             "remote_addr": self.remote_addr,
         }
+
+        # Publish event to Kafka for other honeypots to consume
+        try:
+            kafka.send(
+                "HTTPtoDB",
+                {
+                    "target": "database", # Added target
+                    "event_type": "http_request",
+                    "session_id": self.session_id,
+                    "method": method,
+                    "path": path,
+                    "body_preview": (body[:400] if body else None),
+                    "remote_addr": self.remote_addr, # Re-added remote_addr
+                },
+            )
+            kafka.send(
+                "HTTPtoSSH",
+                {
+                    "target": "ssh", # Added target
+                    "event_type": "http_request",
+                    "session_id": self.session_id,
+                    "method": method,
+                    "path": path,
+                    "remote_addr": self.remote_addr,
+                    "user_agent": headers.get("user-agent") # Added user_agent
+                },
+            )
+        except Exception as e:
+            print(f"[https][{self.session_id}] Kafka send error: {e}")
 
         try:
             action = await controller.get_action_for_request(self.session_id, event)
@@ -269,6 +304,33 @@ def generate_self_signed_cert(certfile="shophub_cert.pem", keyfile="shophub_key.
 
 async def main():
     loop = asyncio.get_running_loop()
+
+    async def http_kafka_handler(msg):
+        try:
+            print(f"[http][kafka] received: {msg}")
+            sid = msg.get("session_id")
+            if sid and hasattr(controller, "sessions"):
+                sess = controller.sessions.setdefault(sid, {})
+                sess.setdefault("cross_messages", []).append(msg)
+
+            # Example reaction: if DB reported suspicious IPs, add it to blocklist in controller
+            if msg.get("event_type") == "suspicious_ip":
+                ip = msg.get("ip")
+                if ip:
+                    # store into controller sessions or blocklist (implement as you prefer)
+                    print(f"[http] add to blocklist: {ip}")
+                    # Example: Add to a simple in-memory blocklist
+                    if not hasattr(controller, "blocklist"):
+                        controller.blocklist = set()
+                    controller.blocklist.add(ip)
+        except Exception as e:
+            print(f"[http][kafka] handler error: {e}")
+
+    # start kafka consumer loop
+    try:
+        loop.create_task(kafka.start_consumer_loop(http_kafka_handler))
+    except Exception as e:
+        print(f"[honeypot] Error starting Kafka consumer loop: {e}")
 
     # Generate or load certificate
     certfile, keyfile = generate_self_signed_cert()

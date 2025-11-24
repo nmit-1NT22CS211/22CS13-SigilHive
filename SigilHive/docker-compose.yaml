@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  kafka:
+    image: 'confluentinc/cp-kafka:7.5.0'
+    hostname: kafka
+    container_name: sigilhive-kafka
+    networks:
+      - sigilhive-network
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      # KRaft settings
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9094'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      # Listeners
+      KAFKA_LISTENERS: 'PLAINTEXT_INTERNAL://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT_INTERNAL://kafka:9092,PLAINTEXT_HOST://localhost:9093'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT_INTERNAL'
+      # Cluster settings
+      CLUSTER_ID: 'rLk7M8zZ9xY1aB2cD3eF4g'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE: 'false'
+      # Log dirs
+      KAFKA_LOG_DIRS: '/var/lib/kafka/data'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+
+  ssh-honeypot:
+    build:
+      context: .
+      dockerfile: ./ssh_server/Dockerfile
+    container_name: ssh-honeypot
+    networks:
+      - sigilhive-network
+    ports:
+      - "2223:2223"
+    environment:
+      PORT: "2223"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ./kafka_config.json:/app/kafka_config.json:ro
+    secrets:
+      - ssh_host_key
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  database-honeypot:
+    build:
+      context: .
+      dockerfile: ./database/Dockerfile
+    container_name: database-honeypot
+    networks:
+      - sigilhive-network
+    ports:
+      - "2222:2222"
+    environment:
+      MYSQL_PORT: "2222"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ./kafka_config.json:/app/kafka_config.json:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  http-honeypot:
+    build:
+      context: .
+      dockerfile: ./http_honeypot_service/Dockerfile
+    container_name: http-honeypot
+    networks:
+      - sigilhive-network
+    ports:
+      - "8443:8443"
+    environment:
+      HTTPS_PORT: "8443"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ./kafka_config.json:/app/kafka_config.json:ro
+    secrets:
+      - shophub_cert
+      - shophub_key
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  sigilhive-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+    driver: local
+
+secrets:
+  ssh_host_key:
+    file: ./ssh_server/ssh_host_key
+  shophub_cert:
+    file: ./http_honeypot_service/shophub_cert.pem
+  shophub_key:
+    file: ./http_honeypot_service/shophub_key.pem

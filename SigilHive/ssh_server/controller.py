@@ -1,16 +1,16 @@
 # controller.py - FIXED VERSION
-import llm_gen
+from . import llm_gen
 import asyncio
 import numpy as np
 import time
 import random
 from typing import Dict, Any, Optional
 from datetime import datetime
-from adaptive_response import AdaptiveResponseSystem
-from smart_prompt_generator import SmartPromptGenerator
-from dynamic_filesystem import DynamicFileSystem
-from smart_cache import SmartCache
-from enhanced_analytics import EnhancedAnalytics, CommandEvent
+from .adaptive_response import AdaptiveResponseSystem
+from .smart_prompt_generator import SmartPromptGenerator
+from .dynamic_filesystem import DynamicFileSystem
+from .smart_cache import SmartCache
+from .enhanced_analytics import EnhancedAnalytics, CommandEvent
 
 
 SHOPHUB_STRUCTURE = {

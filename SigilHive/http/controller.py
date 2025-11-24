@@ -1,6 +1,6 @@
 # shophub_controller.py
 from typing import Dict, Any, Optional
-from .llm_gen import generate_shophub_response_async
+from llm_gen import generate_shophub_response_async
 
 
 class ShopHubState:

@@ -1,11 +1,4 @@
 asyncssh
-asyncio
-numpy
-python-dotenv
-langchain-core
+langchain
 langchain-google-genai
-
-# New dependencies for enhancements
-tabulate>=0.9.0  # For CLI table formatting
-cryptography # for http_honeypot.py certificate generation
-confluent-kafka>=1.8.2
+python-dotenv

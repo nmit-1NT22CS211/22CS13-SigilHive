@@ -2,7 +2,7 @@
 import re
 import json
 from typing import Dict, Any, List, Optional, Tuple
-from .llm_gen import generate_db_response_async
+from llm_gen import generate_db_response_async
 
 
 class ShopHubDatabase:
@@ -496,6 +496,7 @@ class ShopHubDatabase:
                     row_count = len(table_info.get("rows", []))
                     col_count = len(table_info.get("columns", []))
                     summary += f"  - {table}: {row_count} rows, {col_count} columns\n"
+                    # Add column names for DESCRIBE queries
                     cols = table_info.get("columns", [])
                     summary += f"    Columns: {', '.join(cols)}\n"
 
@@ -544,99 +545,6 @@ class ShopHubDBController:
             return "use_db"
         else:
             return "other"
-
-    def _validate_sql_syntax(self, query: str) -> tuple[bool, str]:
-        """Validate basic SQL syntax before processing"""
-        q_upper = query.upper().strip()
-
-        # List of valid SQL keywords that should start commands
-        valid_keywords = [
-            "SELECT",
-            "SHOW",
-            "DESCRIBE",
-            "DESC",
-            "EXPLAIN",
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "CREATE",
-            "DROP",
-            "ALTER",
-            "USE",
-            "GRANT",
-            "REVOKE",
-            "SET",
-            "START",
-            "COMMIT",
-            "ROLLBACK",
-        ]
-
-        # Check if query starts with a valid keyword
-        first_word = q_upper.split()[0] if q_upper.split() else ""
-
-        if first_word not in valid_keywords:
-            # Check if it's a typo of a common command
-            common_typos = {
-                "SHOQ": "SHOW",
-                "SOHW": "SHOW",
-                "SHWO": "SHOW",
-                "SELCT": "SELECT",
-                "SLECT": "SELECT",
-                "SELECTT": "SELECT",
-                "INSER": "INSERT",
-                "UPDAT": "UPDATE",
-                "DELET": "DELETE",
-                "DESCRIB": "DESCRIBE",
-            }
-
-            if first_word in common_typos:
-                correct = common_typos[first_word]
-                return (
-                    False,
-                    f"ERROR 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '{query}' at line 1",
-                )
-
-            # Unknown command
-            return (
-                False,
-                f"ERROR 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '{query}' at line 1",
-            )
-
-        # Validate specific command syntax
-        if first_word == "SHOW":
-            # SHOW must be followed by valid keywords
-            valid_show = [
-                "DATABASES",
-                "SCHEMAS",
-                "TABLES",
-                "COLUMNS",
-                "FIELDS",
-                "VARIABLES",
-                "STATUS",
-                "PROCESSLIST",
-                "CREATE",
-                "GRANTS",
-                "INDEX",
-                "INDEXES",
-                "KEYS",
-                "WARNINGS",
-                "ERRORS",
-            ]
-
-            if len(q_upper.split()) < 2:
-                return (
-                    False,
-                    f"ERROR 1064 (42000): You have an error in your SQL syntax near 'SHOW'",
-                )
-
-            second_word = q_upper.split()[1]
-            if second_word not in valid_show:
-                return (
-                    False,
-                    f"ERROR 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '{query}' at line 1",
-                )
-
-        return True, ""
 
     def _is_suspicious(self, query: str) -> bool:
         q_upper = query.upper()
@@ -725,22 +633,6 @@ class ShopHubDBController:
     def _parse_select(self, query: str) -> Optional[str]:
         match = re.search(r'FROM\s+[`"]?(\w+)[`"]?', query, re.IGNORECASE)
         return match.group(1) if match else None
-
-    def _extract_where_conditions(self, query: str) -> Optional[str]:
-        """Extract WHERE clause from query for better LLM context"""
-        match = re.search(
-            r"WHERE\s+(.+?)(?:ORDER BY|GROUP BY|LIMIT|$)", query, re.IGNORECASE
-        )
-        if match:
-            return match.group(1).strip()
-        return None
-
-    def _extract_limit(self, query: str) -> Optional[int]:
-        """Extract LIMIT value from query"""
-        match = re.search(r"LIMIT\s+(\d+)", query, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
 
     def _parse_describe(self, query: str) -> Optional[str]:
         match = re.search(r'(?:DESCRIBE|DESC)\s+[`"]?(\w+)[`"]?', query, re.IGNORECASE)
@@ -833,40 +725,11 @@ class ShopHubDBController:
         if len(session["query_history"]) > 20:
             session["query_history"] = session["query_history"][-20:]
 
-        # Validate SQL syntax first
-        is_valid, error_msg = self._validate_sql_syntax(query)
-        if not is_valid:
-            return {
-                "response": error_msg,
-                "delay": 0.0,
-                "disconnect": False,
-            }
-
         intent = self._classify_query(query)
         is_suspicious = self._is_suspicious(query)
 
         if is_suspicious:
             session["suspicious_count"] += 1
-
-        # Check if database is selected for table operations
-        q_upper = query.upper().strip()
-        requires_db = any(
-            x in q_upper
-            for x in ["SELECT", "INSERT", "UPDATE", "DELETE", "DESCRIBE", "DESC"]
-        )
-        is_show_tables = "SHOW TABLES" in q_upper
-
-        if (
-            (requires_db or is_show_tables)
-            and not self.db_state.current_db
-            and "SHOW DATABASES" not in q_upper
-            and "DATABASE()" not in q_upper
-        ):
-            return {
-                "response": "ERROR 1046 (3D000): No database selected",
-                "delay": 0.0,
-                "disconnect": False,
-            }
 
         # Handle state-changing queries
         if intent in [
@@ -890,13 +753,6 @@ class ShopHubDBController:
             table_name = self._parse_describe(query)
             if table_name:
                 table_info = self.db_state.get_table_data(table_name)
-                if not table_info:
-                    # Table doesn't exist
-                    return {
-                        "response": f"ERROR 1146 (42S02): Table '{self.db_state.current_db}.{table_name}' doesn't exist",
-                        "delay": 0.0,
-                        "disconnect": session["suspicious_count"] > 10,
-                    }
                 if table_info and "column_defs" in table_info:
                     return {
                         "response": {
@@ -944,13 +800,7 @@ class ShopHubDBController:
                 return {
                     "response": {
                         "columns": ["DATABASE()"],
-                        "rows": [
-                            [
-                                self.db_state.current_db
-                                if self.db_state.current_db
-                                else None
-                            ]
-                        ],
+                        "rows": [[self.db_state.current_db]],
                     },
                     "delay": 0.0,
                     "disconnect": session["suspicious_count"] > 10,
@@ -960,37 +810,17 @@ class ShopHubDBController:
             table_name = self._parse_select(query)
             if table_name:
                 table_info = self.db_state.get_table_data(table_name)
-                if not table_info:
-                    # Table doesn't exist in current database
-                    return {
-                        "response": f"ERROR 1146 (42S02): Table '{self.db_state.current_db}.{table_name}' doesn't exist",
-                        "delay": 0.0,
-                        "disconnect": session["suspicious_count"] > 10,
-                    }
-
                 if table_info:
                     columns = table_info.get("columns", [])
                     rows = table_info.get("rows", [])
 
-                    # Always use LLM to generate fresh data for empty tables
-                    if len(rows) == 0:
+                    # If table is empty or has very few rows, use LLM to generate data
+                    if len(rows) < 5:
                         print(
-                            f"[controller] Table '{table_name}' is empty, using LLM to generate data"
+                            f"[controller] Table '{table_name}' has {len(rows)} rows, using LLM to generate data"
                         )
-
-                        # Extract query details for better LLM understanding
-                        where_clause = self._extract_where_conditions(query)
-                        limit_value = self._extract_limit(query)
-
-                        # Build enhanced context
+                        # Use LLM for data generation
                         db_context = self.db_state.get_state_summary()
-                        if where_clause:
-                            db_context += f"\n\nQUERY HAS WHERE CLAUSE: {where_clause}"
-                            db_context += f"\nIMPORTANT: Return ONLY rows that match this WHERE condition!"
-                        if limit_value:
-                            db_context += f"\n\nQUERY HAS LIMIT: {limit_value}"
-                            db_context += f"\nIMPORTANT: Return EXACTLY {limit_value} rows (or fewer if WHERE limits results)"
-
                         delay = (
                             min(0.5 + session["suspicious_count"] * 0.2, 2.0)
                             if is_suspicious
@@ -1005,64 +835,43 @@ class ShopHubDBController:
                             )
 
                             print(
-                                f"[controller] LLM raw response: {raw_response[:200]}"
+                                f"[controller] LLM raw response type: {type(raw_response)}"
+                            )
+                            print(
+                                f"[controller] LLM raw response (first 200 chars): {str(raw_response)[:200]}"
                             )
 
-                            # Parse JSON response
-                            response = None
+                            # Try to parse as JSON
                             if isinstance(raw_response, str):
                                 raw_response = raw_response.strip()
                                 if raw_response.startswith("{"):
                                     try:
-                                        parsed = json.loads(raw_response)
-                                        if (
-                                            isinstance(parsed, dict)
-                                            and "columns" in parsed
-                                            and "rows" in parsed
-                                        ):
+                                        response = json.loads(raw_response)
+                                        print(
+                                            f"[controller] Successfully parsed JSON with keys: {response.keys()}"
+                                        )
+                                        # Validate it has the right structure
+                                        if "columns" in response and "rows" in response:
                                             print(
-                                                f"[controller] ✓ Valid result: {len(parsed['columns'])} cols, {len(parsed['rows'])} rows"
+                                                f"[controller] Valid result set: {len(response['columns'])} columns, {len(response['rows'])} rows"
                                             )
-                                            response = parsed
                                         else:
-                                            response = {
-                                                "columns": ["error"],
-                                                "rows": [["Invalid response format"]],
-                                            }
+                                            print(
+                                                f"[controller] WARNING: JSON missing columns/rows keys"
+                                            )
+                                            response = {"text": raw_response}
                                     except json.JSONDecodeError as e:
-                                        print(f"[controller] JSON parse error: {e}")
-                                        response = {
-                                            "columns": ["error"],
-                                            "rows": [[f"Parse error: {str(e)}"]],
-                                        }
+                                        print(f"[controller] JSON parse failed: {e}")
+                                        response = {"text": raw_response}
                                 else:
-                                    response = {
-                                        "columns": ["result"],
-                                        "rows": [[raw_response]],
-                                    }
+                                    response = {"text": raw_response}
                             else:
                                 response = raw_response
 
-                            # Validate response structure
-                            if not isinstance(response, dict):
-                                response = {
-                                    "columns": ["error"],
-                                    "rows": [[str(response)]],
-                                }
-                            elif "columns" not in response or "rows" not in response:
-                                response = {
-                                    "columns": ["error"],
-                                    "rows": [["Invalid response structure"]],
-                                }
-
                         except Exception as e:
-                            print(f"[controller] LLM error: {e}")
-                            import traceback
-
-                            traceback.print_exc()
+                            print(f"[controller] LLM generation error: {e}")
                             response = {
-                                "columns": ["error"],
-                                "rows": [[f"ERROR: {str(e)}"]],
+                                "text": f"ERROR: Internal server error - {str(e)}"
                             }
 
                         return {
@@ -1071,7 +880,7 @@ class ShopHubDBController:
                             "disconnect": session["suspicious_count"] > 10,
                         }
 
-                    # If table has data, use it
+                    # Simple LIMIT support for existing data
                     limit_match = re.search(r"LIMIT\s+(\d+)", query, re.IGNORECASE)
                     if limit_match:
                         limit = int(limit_match.group(1))
@@ -1082,71 +891,3 @@ class ShopHubDBController:
                         "delay": 0.0,
                         "disconnect": session["suspicious_count"] > 10,
                     }
-
-            # Handle COUNT/SUM/AVG/MIN/MAX
-            agg_match = re.search(
-                r'SELECT\s+(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(\*|`?\w+`?)\s*\)\s+FROM\s+[`"]?(\w+)[`"]?',
-                query,
-                re.IGNORECASE,
-            )
-            if agg_match:
-                func = agg_match.group(1).upper()
-                col = agg_match.group(2).strip("`")
-                table_name = agg_match.group(3)
-                table_info = self.db_state.get_table_data(table_name)
-
-                if table_info:
-                    rows = table_info.get("rows", [])
-                    value = len(rows) if func == "COUNT" else 0
-
-                    return {
-                        "response": {"columns": [f"{func}({col})"], "rows": [[value]]},
-                        "delay": 0.0,
-                        "disconnect": session["suspicious_count"] > 10,
-                    }
-
-        # Fallback to LLM for complex queries
-        db_context = self.db_state.get_state_summary()
-
-        # Extract query details for better LLM understanding
-        if intent == "read":
-            where_clause = self._extract_where_conditions(query)
-            limit_value = self._extract_limit(query)
-
-            if where_clause:
-                db_context += f"\n\nQUERY HAS WHERE CLAUSE: {where_clause}"
-                db_context += (
-                    f"\nIMPORTANT: Return ONLY rows that match this WHERE condition!"
-                )
-            if limit_value:
-                db_context += f"\n\nQUERY HAS LIMIT: {limit_value}"
-                db_context += f"\nIMPORTANT: Return EXACTLY {limit_value} rows (or fewer if WHERE limits results)"
-
-        delay = (
-            min(0.5 + session["suspicious_count"] * 0.2, 2.0) if is_suspicious else 0.0
-        )
-
-        try:
-            raw_response = await generate_db_response_async(
-                query=query,
-                intent=intent,
-                db_context=db_context,
-            )
-
-            # Parse response
-            if isinstance(raw_response, str) and raw_response.strip().startswith("{"):
-                try:
-                    response = json.loads(raw_response.strip())
-                except:
-                    response = {"text": raw_response}
-            else:
-                response = {"text": raw_response}
-
-        except Exception as e:
-            response = {"text": f"ERROR: Internal server error - {str(e)}"}
-
-        return {
-            "response": response,
-            "delay": delay,
-            "disconnect": session["suspicious_count"] > 10,
-        }

@@ -32,9 +32,9 @@ ENV KAFKA_CONFIG_PATH=.../kafka_config.json
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 # Secret will be available at /run/secrets/ssh_host_key
-ENV SSH_HOST_KEY_PATH=/run/secrets/ssh_host_key
+ENV SSH_HOST_KEY_PATH=./ssh_host_key
 
-EXPOSE 5555
+EXPOSE 2223
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["python", "-m", "ssh_server.ssh_server"]

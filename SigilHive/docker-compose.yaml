@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   kafka:
     image: 'confluentinc/cp-kafka:7.5.0'
@@ -40,23 +42,6 @@ services:
       start_period: 90s
     restart: unless-stopped
 
-  init-kafka-topics:
-    image: 'confluentinc/cp-kafka:7.5.0'
-    container_name: init-kafka-topics
-    networks:
-      - sigilhive-network
-    environment:
-      KAFKA_HOST: kafka
-      KAFKA_PORT: 9092
-    volumes:
-      - ./scripts/init-topics.sh:/usr/local/bin/init-topics.sh
-    depends_on:
-      kafka:
-        condition: service_healthy
-    entrypoint: ["/bin/bash", "-c"]
-    command: ["/bin/bash /usr/local/bin/init-topics.sh"]
-    restart: on-failure
-
   ssh-honeypot:
     build:
       context: .
@@ -65,19 +50,17 @@ services:
     networks:
       - sigilhive-network
     ports:
-      - "5555:2223"
+      - "2223:2223"
     environment:
-      # PORT: "5555"
+      PORT: "2223"
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    env_file:
-      - .env
     volumes:
       - ./kafka_config.json:/app/kafka_config.json:ro
+    secrets:
+      - ssh_host_key
     depends_on:
       kafka:
         condition: service_healthy
-      init-kafka-topics:
-        condition: service_completed_successfully
     restart: unless-stopped
 
   database-honeypot:
@@ -92,15 +75,11 @@ services:
     environment:
       MYSQL_PORT: "2222"
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    env_file:
-      - .env
     volumes:
       - ./kafka_config.json:/app/kafka_config.json:ro
     depends_on:
       kafka:
         condition: service_healthy
-      init-kafka-topics:
-        condition: service_completed_successfully
     restart: unless-stopped
 
   http-honeypot:
@@ -115,8 +94,6 @@ services:
     environment:
       HTTPS_PORT: "8443"
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    env_file:
-      - .env
     volumes:
       - ./kafka_config.json:/app/kafka_config.json:ro
     secrets:
@@ -125,8 +102,6 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-      init-kafka-topics:
-        condition: service_completed_successfully
     restart: unless-stopped
 
 networks:

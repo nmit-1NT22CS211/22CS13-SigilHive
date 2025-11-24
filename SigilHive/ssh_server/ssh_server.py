@@ -11,7 +11,6 @@ from kafka_manager import HoneypotKafka
 # Load environment variables from .env file
 load_dotenv()
 
-# Listen on all interfaces (IPv4 & IPv6 inside container)
 HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", "2223"))
 
@@ -20,26 +19,12 @@ VALID_USERNAME = os.getenv("SSH_USERNAME", "shophub")
 VALID_PASSWORD = os.getenv("SSH_PASSWORD", "ShopHub121!")
 
 controller = Controller(persona="shophub-production-server")
-controller.sessions = {}  # Initialize sessions dictionary
+controller.sessions = {} # Initialize sessions dictionary
 
 # Kafka manager for SSH honeypot
 kafka = HoneypotKafka(
     "ssh", config_path=os.getenv("KAFKA_CONFIG_PATH", "kafka_config.json")
 )
-
-
-# Define a resilient async Kafka handler for consumer loop
-async def ssh_kafka_handler(*args, **kwargs):
-    try:
-        print(f"[honeypot] kafka handler invoked with args={args} kwargs={kwargs}")
-
-        if hasattr(controller, "handle_kafka_event"):
-            try:
-                await controller.handle_kafka_event(*args, **kwargs)
-            except TypeError:
-                controller.handle_kafka_event(*args, **kwargs)
-    except Exception as e:
-        print(f"[honeypot] ssh_kafka_handler error: {e}")
 
 
 class HoneypotSession(asyncssh.SSHServerSession):
@@ -57,23 +42,30 @@ class HoneypotSession(asyncssh.SSHServerSession):
 
     def connection_made(self, chan):
         self._chan = chan
-        controller.sessions[self.session_id] = {"transport": chan}
-        peer = chan.get_extra_info("peername")
-        print(f"[honeypot][{self.session_id}] connection established from {peer}")
+        controller.sessions[self.session_id] = {"transport": chan} # Store transport in controller.sessions
+        print(f"[honeypot][{self.session_id}] connection established")
         try:
+            # Send ShopHub banner (ensure string)
             banner = f"""
 ╔═══════════════════════════════════════════════════════════╗
+
 ║         Welcome to ShopHub Production Server              ║
+
 ║                                                           ║
+
 ║  WARNING: Unauthorized access is strictly prohibited      ║
+
 ║  All activities are monitored and logged                  ║
+
 ╚═══════════════════════════════════════════════════════════╝
 
 ShopHub v2.3.1 - E-commerce Platform
 Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
 
 """
+            # Write banner and then prompt. Use str(...) to be robust.
             self._chan.write(str(banner))
+            # tiny newline to reduce chance of prompt-appending artifacts
             self._chan.write("\r\n")
             self._write_prompt()
         except Exception as e:
@@ -83,10 +75,8 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         """Write a realistic shell prompt"""
         if self._chan and not self._closed:
             try:
-                prompt = (
-                    f"\033[32m{self.username}@{self.hostname}\033[0m:"
-                    f"\033[34m{self.current_dir}\033[0m$ "
-                )
+                # Color codes for realistic prompt
+                prompt = f"\033[32m{self.username}@{self.hostname}\033[0m:\033[34m{self.current_dir}\033[0m$ "
                 self._chan.write(str(prompt))
             except Exception as e:
                 print(f"[honeypot][{self.session_id}] error in _write_prompt: {e}")
@@ -94,8 +84,10 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
     def _normalize_path(self, path: str) -> str:
         """Normalize a path relative to current directory"""
         if path.startswith("/"):
+            # Absolute path - check if it's valid
             if path == "/":
                 return "/"
+            # For simplicity, treat /home/shophub as ~
             if path.startswith("/home/shophub"):
                 return path.replace("/home/shophub", "~")
             return path
@@ -106,6 +98,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         elif path == "..":
             return self._get_parent_dir(self.current_dir)
         else:
+            # Relative path
             if self.current_dir == "~":
                 return f"~/{path}"
             elif self.current_dir.endswith("/"):
@@ -115,17 +108,20 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
 
     def _get_parent_dir(self, path: str) -> str:
         """Get parent directory of given path"""
-        if path in ("~", "/", "/home/shophub"):
+        if path == "~" or path == "/" or path == "/home/shophub":
             return "~"
 
+        # Remove trailing slash
         path = path.rstrip("/")
 
+        # Handle ~/ prefix
         if path.startswith("~/"):
             parts = path[2:].split("/")
             if len(parts) <= 1:
                 return "~"
             return "~/" + "/".join(parts[:-1])
 
+        # Handle absolute paths
         if path.startswith("/"):
             parts = path[1:].split("/")
             if len(parts) <= 1:
@@ -141,6 +137,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
 
     def data_received(self, data, datatype):
         """Handle incoming data from SSH client"""
+        # asyncssh in text mode will send strings; keep accumulating them
         self._input += data
 
         while "\n" in self._input or "\r" in self._input:
@@ -155,6 +152,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
 
             cmd = line.strip()
 
+            # Handle exit commands
             if cmd.lower() in ("exit", "logout", "quit"):
                 try:
                     self._chan.write("\nGoodbye from ShopHub!\n")
@@ -163,6 +161,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                     pass
                 return
 
+            # Handle empty input
             if cmd == "":
                 try:
                     self._write_prompt()
@@ -170,6 +169,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                     pass
                 continue
 
+            # Handle cd command locally for immediate feedback
             if cmd.startswith("cd ") or cmd == "cd":
                 self._handle_cd_command(cmd)
                 continue
@@ -182,18 +182,24 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         parts = cmd.split(maxsplit=1)
 
         if len(parts) == 1 or (len(parts) > 1 and parts[1] == "~"):
+            # cd with no args or cd ~ goes to home
             self.current_dir = "~"
         elif len(parts) > 1 and parts[1] == "..":
+            # cd .. goes up one directory
             self.current_dir = self._get_parent_dir(self.current_dir)
         elif len(parts) > 1 and parts[1] == ".":
+            # cd . stays in current directory
             pass
         elif len(parts) > 1 and parts[1] == "/":
+            # cd / goes to root (but we redirect to home for this app)
             self.current_dir = "~"
         else:
+            # Check if target directory exists
             target_path = self._normalize_path(parts[1])
             if self._directory_exists(target_path):
                 self.current_dir = target_path
             else:
+                # Directory doesn't exist
                 try:
                     self._chan.write(
                         f"bash: cd: {parts[1]}: No such file or directory\n"
@@ -207,8 +213,10 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                         pass
                     return
 
+        # Log directory change
         print(f"[honeypot][{self.session_id}] cd -> {self.current_dir}")
 
+        # Write new prompt
         try:
             self._write_prompt()
         except Exception as e:
@@ -219,12 +227,6 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         if self._closed or not self._chan:
             return
 
-        peer_ip = (
-            self._chan.get_extra_info("peername")[0]
-            if self._chan and self._chan.get_extra_info("peername")
-            else "unknown"
-        )
-
         event = {
             "session_id": self.session_id,
             "type": "command",
@@ -233,8 +235,40 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
             "ts": datetime.now(timezone.utc).isoformat(),
             "cmd_count": self.cmd_count,
             "elapsed": time.time() - self.start_time,
-            "remote_addr": peer_ip,
         }
+
+        # publish SSH event to Kafka (DB and HTTP topics)
+        try:
+            # The original instruction had `remote_addr` here, but it's not available directly in `handle_command`.
+            # Assuming `peer_ip` is available in `connection_made` or can be passed.
+            # For now, I'll omit it as the original snippet in prompt also commented `peer_ip` as 'if available'.
+            # If it's crucial, we'd need to store it in the session object earlier.
+            peer_ip = self._chan.get_extra_info('peername')[0] if self._chan and self._chan.get_extra_info('peername') else 'unknown'
+
+            kafka.send(
+                "SSHtoDB",
+                {
+                    "target": "database",
+                    "event_type": "ssh_command",
+                    "session_id": self.session_id,
+                    "command": cmd,
+                    "result_preview": (action.get("response", "")[:400] if action.get("response") else ""),
+                    "remote_addr": peer_ip,
+                    "current_dir": self.current_dir,
+                },
+            )
+            kafka.send(
+                "SSHtoHTTP",
+                {
+                    "target": "http",
+                    "event_type": "ssh_command",
+                    "session_id": self.session_id,
+                    "command": cmd,
+                    "result_preview": (action.get("response", "")[:400] if action.get("response") else ""),
+                },
+            )
+        except Exception as e:
+            print(f"[honeypot][{self.session_id}] Kafka send error: {e}")
 
         try:
             action = await controller.get_action_for_session(self.session_id, event)
@@ -247,42 +281,16 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                 "delay": 0.05,
             }
 
-        response_text = action.get("response", "") or ""
         delay = float(action.get("delay", 0.0) or 0.0)
-
-        # Publish SSH event to Kafka AFTER we have the response
-        try:
-            preview = response_text[:400] if response_text else ""
-            kafka.send(
-                "SSHtoDB",
-                {
-                    "target": "database",
-                    "event_type": "ssh_command",
-                    "session_id": self.session_id,
-                    "command": cmd,
-                    "result_preview": preview,
-                    "remote_addr": peer_ip,
-                    "current_dir": self.current_dir,
-                },
-            )
-            kafka.send(
-                "SSHtoHTTP",
-                {
-                    "target": "http",
-                    "event_type": "ssh_command",
-                    "session_id": self.session_id,
-                    "command": cmd,
-                    "result_preview": preview,
-                },
-            )
-        except Exception as e:
-            print(f"[honeypot][{self.session_id}] Kafka send error: {e}")
-
         if delay > 0:
             try:
                 await asyncio.sleep(delay)
             except asyncio.CancelledError:
                 return
+
+        response_text = action.get("response", "")
+        if not response_text:
+            response_text = ""
 
         try:
             self._chan.write(str(response_text))
@@ -316,6 +324,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
     def pty_requested(self, *args, **kwargs):
         """
         Accept any pty_requested signature across asyncssh versions.
+        Try to unpack typical values (term, width, height) for logs.
         """
         try:
             if len(args) >= 1:
@@ -328,21 +337,27 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                 f"[honeypot][{self.session_id}] pty requested: term={term}, size={width}x{height}"
             )
         except Exception:
+            # be defensive; don't let logging break the session
             print(f"[honeypot][{self.session_id}] pty requested (could not parse args)")
+        # Always accept PTY allocation for the honeypot
         return True
 
     def shell_requested(self):
+        """Handle shell request from client"""
         print(f"[honeypot][{self.session_id}] shell requested")
         return True
 
     def connection_lost(self, exc):
+        """Called when SSH connection is lost"""
         self._closed = True
         duration = time.time() - self.start_time
         print(f"[honeypot][{self.session_id}] connection closed after {duration:.2f}s")
 
+        # Remove session from controller
         if self.session_id in controller.sessions:
             del controller.sessions[self.session_id]
 
+        # End session in controller
         try:
             controller.end_session(self.session_id)
         except Exception as e:
@@ -356,10 +371,12 @@ class HoneypotServer(asyncssh.SSHServer):
     """Custom SSH server class that creates sessions"""
 
     def __init__(self):
-        super().__init__()
+        self.sessions = {} # Store active sessions by ID for control messages
+
+    def connection_made(self, conn):
         self.conn_id = str(uuid.uuid4())[:8]
         print(
-            f"[honeypot][{self.conn_id}] new SSH connection from {conn.get_extra_info('peername')}"
+            f"[honeypot][{self.conn_id}] new SSH connection established from {conn.get_extra_info('peername')}"
         )
 
     def connection_lost(self, exc):
@@ -369,25 +386,30 @@ class HoneypotServer(asyncssh.SSHServer):
             print(f"[honeypot][{self.conn_id}] connection closed cleanly")
 
     def begin_auth(self, username):
-        print(f"[honeypot][{self.conn_id}] authentication attempt for '{username}'")
+        """Begin authentication process"""
+        print(
+            f"[honeypot][{self.conn_id}] authentication attempt for user '{username}'"
+        )
+        # Return True to require authentication
         return True
-
-    # --- CRITICAL FIX: ADDED METHOD TO TRIGGER PASSWORD PROMPT ---
-    def get_password(self, username):
-        """Forces the server to send the password prompt to the client."""
-        # Returning an empty string tells asyncssh to request a password interactively.
-        return ""
-
-    # ------------------------------------------------------------
 
     def password_auth_supported(self):
+        """Enable password authentication"""
         return True
 
+    def kbdint_auth_supported(self):
+        """Disable keyboard-interactive authentication"""
+        return False
+
+    def public_key_auth_supported(self):
+        """Disable public key authentication"""
+        return False
+
     def validate_password(self, username, password):
+        """Validate password against configured credentials"""
         print(f"[honeypot][{self.conn_id}] login attempt: {username}:{password}")
 
-        # You may want to log failed attempts to Kafka here before returning False
-
+        # Check if username and password match
         is_valid = username == VALID_USERNAME and password == VALID_PASSWORD
 
         if is_valid:
@@ -402,33 +424,29 @@ class HoneypotServer(asyncssh.SSHServer):
         return is_valid
 
     def session_requested(self):
+        """When SSH client requests a session"""
         session_id = str(uuid.uuid4())[:8]
-        print(f"[honeypot][{self.conn_id}] session requested -> {session_id}")
-        return HoneypotSession(session_id)
-
-    def kbdint_auth_supported(self):
-        return False
-
-    def public_key_auth_supported(self):
-        return False
+        session = HoneypotSession(session_id)
+        return session
 
 
-def ensure_host_key(path):
-    """Create an ED25519 host key file if it doesn't exist (helps first-run)."""
+def ensure_host_key(path="ssh_host_key"):
+    """Create a RSA host key file if it doesn't exist (helps first-run)."""
     if os.path.exists(path):
         return
     try:
         print("[honeypot] generating ssh host key...")
-        key = asyncssh.generate_private_key("ssh-ed25519")
+        key = asyncssh.generate_private_key("ssh-rsa")
         with open(path, "wb") as f:
             f.write(key.export_private_key())
+        # write public key too
         pub = key.export_public_key()
         with open(path + ".pub", "wb") as f:
             f.write(pub)
         try:
             os.chmod(path, 0o600)
         except OSError:
-            pass
+            pass  # Ignore on Windows
         print("[honeypot] ssh host key generated")
     except Exception as e:
         print(f"[honeypot] failed to generate host key: {e}")
@@ -439,61 +457,81 @@ async def start_server():
     print(f"[honeypot] starting SSH honeypot on {HOST}:{PORT} ...")
     print(f"[honeypot] valid credentials: {VALID_USERNAME}:{VALID_PASSWORD}")
 
-    host_key_path = "./ssh_server/ssh_host_key"
-    print(f"[honeypot] DEBUG: Using hardcoded SSH_HOST_KEY_PATH: {host_key_path}")
-    ensure_host_key(host_key_path)
+    ensure_host_key("/app/ssh-server/ssh_host_key")
 
-    try:
-        host_key = asyncssh.read_private_key(host_key_path)
-        print("[honeypot] Host key loaded successfully")
-    except Exception as e:
-        print(f"[honeypot] ERROR: Failed to load host key: {e}")
-        return
-
+    # Start controller background tasks after event loop is ready
     try:
         await controller.start_background_tasks()
     except Exception as e:
         print(f"[honeypot] warning: background tasks failed to start: {e}")
 
+    # start kafka consumer loop
     try:
-        # In ssh_server.py, update the asyncssh.create_server call
-        # In ssh_server.py, update the asyncssh.create_server call
-        server = await asyncssh.create_server(
+        loop = asyncio.get_running_loop()
+
+        async def ssh_kafka_handler(msg):
+            try:
+                print(f"[ssh][kafka] received: {msg}")
+                sid = msg.get("session_id")
+                if sid:
+                    # Generic message logging
+                    if hasattr(controller, "sessions"):
+                        sess = controller.sessions.setdefault(sid, {})
+                        sess.setdefault("cross_messages", []).append(msg)
+
+                    # Specific control action: disconnect session
+                    if msg.get("event_type") == "control" and msg.get("action") == "disconnect":
+                        target_session = msg.get("session_id")
+                        if target_session:
+                            # Access the server instance (assuming it's available in this scope)
+                            # This part is tricky if server is not directly accessible.
+                            # We might need to pass the server instance to the handler or use a global.
+                            # For now, let's assume `server_instance` is accessible.
+                            # A better approach would be to have a shared session registry.
+                            # For simplicity, let's try to access it via HoneypotServer's sessions dict.
+                            # This requires a reference to the HoneypotServer instance.
+                            # Since server is created inside create_server, we need to adapt.
+                            # Let's use a simpler approach for now by directly interacting with
+                            # the controller.sessions if it stores the transport.
+                            # If controller.sessions is to store the actual HoneypotSession object
+                            # we need to make sure it's stored there.
+
+                            # For now, let's assume controller.sessions might store enough info
+                            # to find the channel, or we need to refine how sessions are stored.
+                            # As per instruction, `s = controller.sessions.get(target_session)`
+                            # and `t = s["transport"]` is expected.
+
+                            s = controller.sessions.get(target_session)
+                            if s and "transport" in s:
+                                t = s["transport"]
+                                print(f"[ssh][kafka] Disconnecting session {target_session}")
+                                t.close()
+                            else:
+                                print(f"[ssh][kafka] Session {target_session} not found or no transport.")
+
+            except Exception as e:
+                print(f"[ssh][kafka] handler error: {e}")
+
+        loop.create_task(kafka.start_consumer_loop(ssh_kafka_handler))
+    except Exception:
+        pass
+
+    try:
+        await asyncssh.create_server(
             HoneypotServer,
             HOST,
             PORT,
-            server_host_keys=[host_key],
-            server_version="SSH-2.0-OpenSSH_8.9p1 Ubuntu-3",
-            # EXPANDED ALGORITHM LISTS FOR COMPATIBILITY
-            kex_algs=[
-                "curve25519-sha256",
-                "diffie-hellman-group14-sha256",
-                "diffie-hellman-group16-sha512",
-                "diffie-hellman-group18-sha512",
-            ],
-            encryption_algs=[
-                "chacha20-poly1305@openssh.com",
-                "aes256-gcm@openssh.com",
-                "aes128-gcm@openssh.com",  # <-- CORRECTED TYPO HERE
-                "aes256-ctr",
-                "aes128-ctr",
-            ],
-            mac_algs=["hmac-sha2-512", "hmac-sha2-256"],
-            compression_algs=["none"],
+            server_host_keys=["/app/ssh-server/ssh_host_key"],
         )
+        print(f"[honeypot] ✅ listening on {HOST}:{PORT}")
 
-        print(f"[honeypot] 🚀 SSH honeypot listening on {HOST}:{PORT}")
-        print("[honeypot] Waiting for SSH connections...")
-
-        loop = asyncio.get_running_loop()
-        loop.create_task(kafka.start_consumer_loop(ssh_kafka_handler))
-
-        await server.wait_closed()
+        # Run forever
+        await asyncio.Future()
 
     except (OSError, asyncssh.Error) as exc:
         print(f"[honeypot] server failed to start: {exc}")
-
     finally:
+        # Clean shutdown
         try:
             await controller.stop_background_tasks()
         except Exception:

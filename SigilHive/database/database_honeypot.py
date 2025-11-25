@@ -11,7 +11,7 @@ from controller import ShopHubDBController
 
 # Configuration
 MYSQL_HOST = "0.0.0.0"
-MYSQL_PORT = int(os.getenv("MYSQL_PORT", "2222"))
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "2224"))
 
 # Set to True to require passwords, False to accept without password (for testing)
 REQUIRE_PASSWORD = os.getenv("REQUIRE_PASSWORD", "false").lower() == "true"
@@ -407,11 +407,11 @@ class MySQLProtocol(asyncio.Protocol):
                 pos += 4
 
                 # Max packet size (4 bytes)
-                max_packet = struct.unpack("<I", payload[pos : pos + 4])[0]
+                # max_packet = struct.unpack("<I", payload[pos : pos + 4])[0]
                 pos += 4
 
                 # Charset (1 byte)
-                charset = payload[pos]
+                # charset = payload[pos]
                 pos += 1
 
                 # Reserved (23 bytes)

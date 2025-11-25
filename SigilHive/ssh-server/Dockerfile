@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENV PORT=2223
-EXPOSE 2223
+ENV PORT=5555
+EXPOSE 5555
 
-CMD ["python", "ssh_server.py"]
+CMD ["python", "-u", "ssh_server.py"]

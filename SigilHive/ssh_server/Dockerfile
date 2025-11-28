@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ENV PYTHONPATH=/app   
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -11,3 +13,4 @@ ENV PORT=5555
 EXPOSE 5555
 
 CMD ["python", "-u", "ssh_server.py"]
+

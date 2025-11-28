@@ -1,15 +1,11 @@
-# shophub_db_llm_gen.py
 import os
 import json
 import time
 import asyncio
 import hashlib
-import re
 from typing import Optional
 from dotenv import load_dotenv
 
-# Note: these imports assume you have these libraries available in your environment.
-# If the actual package/module names differ in your environment, adjust accordingly.
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -65,8 +61,10 @@ def sanitize(text: str) -> str:
         if pattern in out:
             out = out.replace(pattern, replacement)
 
-    if len(out) > 10000:
-        out = out[:10000] + "\n...[truncated]"
+    # Less aggressive truncation to avoid breaking JSON
+    MAX_LEN = 50000
+    if len(out) > MAX_LEN:
+        out = out[:MAX_LEN] + "\n...[truncated]"
 
     return out
 
@@ -81,22 +79,20 @@ def clean_json_response(text: str) -> str:
     if not isinstance(text, str):
         return ""
 
-    # Remove triple-backtick fenced blocks (any language) and inline code fences
-    # Replace fenced blocks with their content (strip fences)
-    text = re.sub(
-        r"```(?:[\s\S]*?\n)?", "", text
-    )  # remove opening ``` and anything up to newline
-    text = re.sub(r"```", "", text)  # remove closing ```
-    text = re.sub(r"`([^`]*)`", r"\1", text)
-
-    # Strip surrounding whitespace
+    # Remove simple ```json / ``` fences
+    text = text.replace("```json", "").replace("```", "")
     text = text.strip()
 
-    # Attempt to extract the first top-level JSON object {...}
-    # Use a simple brace matching: find the first '{' and match braces until balanced.
+    # First try: whole string is JSON
+    try:
+        json.loads(text)
+        return text
+    except Exception:
+        pass
+
+    # Try to extract first JSON object using brace counting
     if "{" in text and "}" in text:
         start = text.find("{")
-        # attempt to find matching closing brace using a counter
         counter = 0
         end = -1
         for i in range(start, len(text)):
@@ -110,11 +106,9 @@ def clean_json_response(text: str) -> str:
         if start != -1 and end != -1:
             candidate = text[start : end + 1]
             try:
-                # Validate candidate is JSON
                 json.loads(candidate)
                 return candidate
             except json.JSONDecodeError:
-                # fallthrough to returning cleaned text
                 pass
 
     return text
@@ -170,9 +164,11 @@ RESPONSE RULES:
    - NEVER use ```json or ``` markers
    - Column names in SELECT must EXACTLY match the schema in DATABASE CONTEXT
 
-CRITICAL:
-- Your response must be ONLY the JSON object or the message text
-- For SELECT queries, generate AT LEAST 20-30 rows with VARIED, REALISTIC data
+HARD FORMAT CONSTRAINTS:
+- If the query is SELECT/SHOW/DESCRIBE: you MUST return exactly one JSON object.
+- That JSON MUST contain exactly two top-level keys: "columns" and "rows".
+- Do NOT output any other text before or after the JSON.
+- Do NOT wrap JSON in markdown or any code fences.
 
 Generate the response now:
 """
@@ -181,12 +177,10 @@ Generate the response now:
 
 def _get_llm_client():
     """Instantiate the Gemini (Google) client wrapper."""
-    # This wrapper call may vary depending on your installed library's API.
-    # Adjust model and kwargs to match your environment if necessary.
     return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash-exp",
+        model="gemini-2.5-flash",
         temperature=0.3,
-        max_output_tokens=2048,
+        max_output_tokens=4096,
         api_key=GEMINI_KEY,
     )
 
@@ -195,15 +189,11 @@ def _call_gemini_sync(prompt: str) -> str:
     """Call Gemini synchronously and return text content. Handles basic exceptions."""
     client = _get_llm_client()
     try:
-        # The exact invocation may vary depending on the wrapper implementation.
-        # Here we assume .invoke takes a list of HumanMessage and returns an object with `.content`.
         resp = client.invoke([HumanMessage(content=prompt)])
-        # resp might be a plain string, or an object. Try to pull content robustly.
+        print(resp)
         if hasattr(resp, "content"):
-            # content could be a string or list; handle common cases
             content = resp.content
             if isinstance(content, list):
-                # join list segments into one string
                 text = " ".join(map(str, content))
             else:
                 text = str(content)
@@ -214,9 +204,8 @@ def _call_gemini_sync(prompt: str) -> str:
         text = clean_json_response(text)
 
     except Exception as e:
-        # Return a standard SQL-like error string for downstream handling
         text = f"ERROR: Database temporarily unavailable - {e}"
-    return sanitize(text)
+    return text
 
 
 async def generate_db_response_async(
@@ -235,7 +224,6 @@ async def generate_db_response_async(
     prompt = _build_prompt(query, intent, db_context)
 
     try:
-        # Run the synchronous LLM call in a thread to avoid blocking the event loop
         out = await asyncio.to_thread(_call_gemini_sync, prompt)
     except Exception as e:
         print(f"[llm_gen] Error during LLM call: {e}")
@@ -244,18 +232,15 @@ async def generate_db_response_async(
     out = sanitize(out)
     _cache[cache_key] = out
 
-    # Persist occasionally to avoid frequent disk writes. We use a time-based simple heuristic.
     try:
         if int(time.time()) % 10 == 0:
             _persist_cache()
     except Exception:
-        # don't let persistence errors bubble up
         pass
 
     return out
 
 
-# Optional convenience synchronous wrapper for callers that want blocking behaviour
 def generate_db_response(
     query: str,
     intent: Optional[str] = None,
@@ -269,7 +254,6 @@ def generate_db_response(
 
 
 if __name__ == "__main__":
-    # Simple CLI test: read a query from environment or example and print output
     example_query = os.getenv(
         "SHOPHUB_TEST_QUERY", "SELECT id, name FROM products LIMIT 5;"
     )

@@ -4,3 +4,4 @@ langchain-google-genai
 python-dotenv
 uvloop
 aiofiles
+confluent_kafka

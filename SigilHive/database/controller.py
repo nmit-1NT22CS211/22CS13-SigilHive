@@ -1,412 +1,416 @@
-# shophub_db_controller.py
 import re
 import json
+import numpy as np
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 from llm_gen import generate_db_response_async
+from kafka_manager import HoneypotKafkaManager
+from file_structure import DATABASES
 
 
 class ShopHubDatabase:
     """Maintains ShopHub e-commerce database state"""
 
     def __init__(self):
-        self.databases = {}
-        self.current_db = None
+        self.databases = DATABASES
+        # IMPORTANT: no default DB selected on startup (matches MySQL semantics)
+        self.current_db: Optional[str] = None
         self._initialize_shophub()
 
-    def _initialize_shophub(self):
-        """Initialize ShopHub e-commerce databases and tables"""
+    # def _initialize_shophub(self):
+    #     """Initialize ShopHub e-commerce databases and tables"""
 
-        # System databases
-        self.databases = {
-            "information_schema": {
-                "tables": {
-                    "schemata": {
-                        "columns": ["SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME"],
-                        "rows": [
-                            ["information_schema", "utf8"],
-                            ["mysql", "utf8"],
-                            ["shophub", "utf8mb4"],
-                            ["shophub_logs", "utf8mb4"],
-                        ],
-                    },
-                    "tables": {
-                        "columns": ["TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE"],
-                        "rows": [
-                            ["shophub", "users", "BASE TABLE"],
-                            ["shophub", "products", "BASE TABLE"],
-                            ["shophub", "categories", "BASE TABLE"],
-                            ["shophub", "orders", "BASE TABLE"],
-                            ["shophub", "order_items", "BASE TABLE"],
-                            ["shophub", "cart", "BASE TABLE"],
-                            ["shophub", "payments", "BASE TABLE"],
-                            ["shophub", "reviews", "BASE TABLE"],
-                            ["shophub", "addresses", "BASE TABLE"],
-                            ["shophub", "admin_users", "BASE TABLE"],
-                        ],
-                    },
-                }
-            },
-            "mysql": {
-                "tables": {
-                    "user": {
-                        "columns": ["Host", "User", "authentication_string"],
-                        "rows": [
-                            ["localhost", "root", "*[REDACTED]"],
-                            ["localhost", "shophub_app", "*[REDACTED]"],
-                        ],
-                    }
-                }
-            },
-            "shophub": {
-                "tables": {
-                    "users": {
-                        "columns": [
-                            "id",
-                            "email",
-                            "password_hash",
-                            "first_name",
-                            "last_name",
-                            "created_at",
-                            "last_login",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["email", "varchar(100)", "NO", "UNI", None, ""],
-                            ["password_hash", "varchar(255)", "NO", "", None, ""],
-                            ["first_name", "varchar(50)", "YES", "", None, ""],
-                            ["last_name", "varchar(50)", "YES", "", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                            ["last_login", "timestamp", "YES", "", None, ""],
-                        ],
-                        "rows": [],
-                    },
-                    "categories": {
-                        "columns": [
-                            "id",
-                            "name",
-                            "slug",
-                            "description",
-                            "parent_id",
-                            "created_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["name", "varchar(100)", "NO", "", None, ""],
-                            ["slug", "varchar(100)", "NO", "UNI", None, ""],
-                            ["description", "text", "YES", "", None, ""],
-                            ["parent_id", "int", "YES", "MUL", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "products": {
-                        "columns": [
-                            "id",
-                            "name",
-                            "slug",
-                            "category_id",
-                            "price",
-                            "stock",
-                            "description",
-                            "image_url",
-                            "created_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["name", "varchar(200)", "NO", "", None, ""],
-                            ["slug", "varchar(200)", "NO", "UNI", None, ""],
-                            ["category_id", "int", "YES", "MUL", None, ""],
-                            ["price", "decimal(10,2)", "NO", "", None, ""],
-                            ["stock", "int", "NO", "", "0", ""],
-                            ["description", "text", "YES", "", None, ""],
-                            ["image_url", "varchar(255)", "YES", "", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "orders": {
-                        "columns": [
-                            "id",
-                            "user_id",
-                            "total_amount",
-                            "status",
-                            "payment_status",
-                            "shipping_address_id",
-                            "created_at",
-                            "updated_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["user_id", "int", "NO", "MUL", None, ""],
-                            ["total_amount", "decimal(10,2)", "NO", "", None, ""],
-                            ["status", "varchar(50)", "NO", "", "pending", ""],
-                            ["payment_status", "varchar(50)", "NO", "", "pending", ""],
-                            ["shipping_address_id", "int", "YES", "MUL", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                            [
-                                "updated_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED on update CURRENT_TIMESTAMP",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "order_items": {
-                        "columns": [
-                            "id",
-                            "order_id",
-                            "product_id",
-                            "quantity",
-                            "price",
-                            "created_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["order_id", "int", "NO", "MUL", None, ""],
-                            ["product_id", "int", "NO", "MUL", None, ""],
-                            ["quantity", "int", "NO", "", "1", ""],
-                            ["price", "decimal(10,2)", "NO", "", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "cart": {
-                        "columns": [
-                            "id",
-                            "user_id",
-                            "product_id",
-                            "quantity",
-                            "added_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["user_id", "int", "NO", "MUL", None, ""],
-                            ["product_id", "int", "NO", "MUL", None, ""],
-                            ["quantity", "int", "NO", "", "1", ""],
-                            [
-                                "added_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "payments": {
-                        "columns": [
-                            "id",
-                            "order_id",
-                            "amount",
-                            "payment_method",
-                            "transaction_id",
-                            "status",
-                            "created_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["order_id", "int", "NO", "MUL", None, ""],
-                            ["amount", "decimal(10,2)", "NO", "", None, ""],
-                            ["payment_method", "varchar(50)", "NO", "", None, ""],
-                            ["transaction_id", "varchar(100)", "NO", "UNI", None, ""],
-                            ["status", "varchar(50)", "NO", "", "pending", ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "reviews": {
-                        "columns": [
-                            "id",
-                            "product_id",
-                            "user_id",
-                            "rating",
-                            "title",
-                            "comment",
-                            "created_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["product_id", "int", "NO", "MUL", None, ""],
-                            ["user_id", "int", "NO", "MUL", None, ""],
-                            ["rating", "int", "NO", "", None, ""],
-                            ["title", "varchar(200)", "YES", "", None, ""],
-                            ["comment", "text", "YES", "", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "addresses": {
-                        "columns": [
-                            "id",
-                            "user_id",
-                            "type",
-                            "street",
-                            "city",
-                            "state",
-                            "zip_code",
-                            "country",
-                            "created_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["user_id", "int", "NO", "MUL", None, ""],
-                            ["type", "varchar(20)", "NO", "", "shipping", ""],
-                            ["street", "varchar(200)", "NO", "", None, ""],
-                            ["city", "varchar(100)", "NO", "", None, ""],
-                            ["state", "varchar(100)", "NO", "", None, ""],
-                            ["zip_code", "varchar(20)", "NO", "", None, ""],
-                            ["country", "varchar(100)", "NO", "", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "admin_users": {
-                        "columns": [
-                            "id",
-                            "username",
-                            "password_hash",
-                            "email",
-                            "role",
-                            "last_login",
-                            "created_at",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["username", "varchar(50)", "NO", "UNI", None, ""],
-                            ["password_hash", "varchar(255)", "NO", "", None, ""],
-                            ["email", "varchar(100)", "NO", "UNI", None, ""],
-                            ["role", "varchar(50)", "NO", "", "viewer", ""],
-                            ["last_login", "timestamp", "YES", "", None, ""],
-                            [
-                                "created_at",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                }
-            },
-            "shophub_logs": {
-                "tables": {
-                    "access_logs": {
-                        "columns": [
-                            "id",
-                            "user_id",
-                            "ip_address",
-                            "action",
-                            "endpoint",
-                            "timestamp",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["user_id", "int", "YES", "MUL", None, ""],
-                            ["ip_address", "varchar(45)", "NO", "", None, ""],
-                            ["action", "varchar(100)", "NO", "", None, ""],
-                            ["endpoint", "varchar(255)", "NO", "", None, ""],
-                            [
-                                "timestamp",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                    "error_logs": {
-                        "columns": [
-                            "id",
-                            "error_type",
-                            "message",
-                            "stack_trace",
-                            "timestamp",
-                        ],
-                        "column_defs": [
-                            ["id", "int", "NO", "PRI", None, "auto_increment"],
-                            ["error_type", "varchar(100)", "NO", "", None, ""],
-                            ["message", "text", "NO", "", None, ""],
-                            ["stack_trace", "text", "YES", "", None, ""],
-                            [
-                                "timestamp",
-                                "timestamp",
-                                "NO",
-                                "",
-                                "CURRENT_TIMESTAMP",
-                                "DEFAULT_GENERATED",
-                            ],
-                        ],
-                        "rows": [],
-                    },
-                }
-            },
-        }
-
-        self.current_db = "shophub"
+    # System databases
+    # self.databases = {
+    #     "information_schema": {
+    #         "tables": {
+    #             "schemata": {
+    #                 "columns": ["SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME"],
+    #                 "rows": [
+    #                     ["information_schema", "utf8"],
+    #                     ["mysql", "utf8"],
+    #                     ["shophub", "utf8mb4"],
+    #                     ["shophub_logs", "utf8mb4"],
+    #                 ],
+    #             },
+    #             "tables": {
+    #                 "columns": ["TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE"],
+    #                 "rows": [
+    #                     ["shophub", "users", "BASE TABLE"],
+    #                     ["shophub", "products", "BASE TABLE"],
+    #                     ["shophub", "categories", "BASE TABLE"],
+    #                     ["shophub", "orders", "BASE TABLE"],
+    #                     ["shophub", "order_items", "BASE TABLE"],
+    #                     ["shophub", "cart", "BASE TABLE"],
+    #                     ["shophub", "payments", "BASE TABLE"],
+    #                     ["shophub", "reviews", "BASE TABLE"],
+    #                     ["shophub", "addresses", "BASE TABLE"],
+    #                     ["shophub", "admin_users", "BASE TABLE"],
+    #                 ],
+    #             },
+    #         }
+    #     },
+    #     "mysql": {
+    #         "tables": {
+    #             "user": {
+    #                 "columns": ["Host", "User", "authentication_string"],
+    #                 "rows": [
+    #                     ["localhost", "root", "*[REDACTED]"],
+    #                     ["localhost", "shophub_app", "*[REDACTED]"],
+    #                 ],
+    #             }
+    #         }
+    #     },
+    #     "shophub": {
+    #         "tables": {
+    #             "users": {
+    #                 "columns": [
+    #                     "id",
+    #                     "email",
+    #                     "password_hash",
+    #                     "first_name",
+    #                     "last_name",
+    #                     "created_at",
+    #                     "last_login",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["email", "varchar(100)", "NO", "UNI", None, ""],
+    #                     ["password_hash", "varchar(255)", "NO", "", None, ""],
+    #                     ["first_name", "varchar(50)", "YES", "", None, ""],
+    #                     ["last_name", "varchar(50)", "YES", "", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                     ["last_login", "timestamp", "YES", "", None, ""],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "categories": {
+    #                 "columns": [
+    #                     "id",
+    #                     "name",
+    #                     "slug",
+    #                     "description",
+    #                     "parent_id",
+    #                     "created_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["name", "varchar(100)", "NO", "", None, ""],
+    #                     ["slug", "varchar(100)", "NO", "UNI", None, ""],
+    #                     ["description", "text", "YES", "", None, ""],
+    #                     ["parent_id", "int", "YES", "MUL", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "products": {
+    #                 "columns": [
+    #                     "id",
+    #                     "name",
+    #                     "slug",
+    #                     "category_id",
+    #                     "price",
+    #                     "stock",
+    #                     "description",
+    #                     "image_url",
+    #                     "created_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["name", "varchar(200)", "NO", "", None, ""],
+    #                     ["slug", "varchar(200)", "NO", "UNI", None, ""],
+    #                     ["category_id", "int", "YES", "MUL", None, ""],
+    #                     ["price", "decimal(10,2)", "NO", "", None, ""],
+    #                     ["stock", "int", "NO", "", "0", ""],
+    #                     ["description", "text", "YES", "", None, ""],
+    #                     ["image_url", "varchar(255)", "YES", "", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "orders": {
+    #                 "columns": [
+    #                     "id",
+    #                     "user_id",
+    #                     "total_amount",
+    #                     "status",
+    #                     "payment_status",
+    #                     "shipping_address_id",
+    #                     "created_at",
+    #                     "updated_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["user_id", "int", "NO", "MUL", None, ""],
+    #                     ["total_amount", "decimal(10,2)", "NO", "", None, ""],
+    #                     ["status", "varchar(50)", "NO", "", "pending", ""],
+    #                     ["payment_status", "varchar(50)", "NO", "", "pending", ""],
+    #                     ["shipping_address_id", "int", "YES", "MUL", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                     [
+    #                         "updated_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED on update CURRENT_TIMESTAMP",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "order_items": {
+    #                 "columns": [
+    #                     "id",
+    #                     "order_id",
+    #                     "product_id",
+    #                     "quantity",
+    #                     "price",
+    #                     "created_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["order_id", "int", "NO", "MUL", None, ""],
+    #                     ["product_id", "int", "NO", "MUL", None, ""],
+    #                     ["quantity", "int", "NO", "", "1", ""],
+    #                     ["price", "decimal(10,2)", "NO", "", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "cart": {
+    #                 "columns": [
+    #                     "id",
+    #                     "user_id",
+    #                     "product_id",
+    #                     "quantity",
+    #                     "added_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["user_id", "int", "NO", "MUL", None, ""],
+    #                     ["product_id", "int", "NO", "MUL", None, ""],
+    #                     ["quantity", "int", "NO", "", "1", ""],
+    #                     [
+    #                         "added_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "payments": {
+    #                 "columns": [
+    #                     "id",
+    #                     "order_id",
+    #                     "amount",
+    #                     "payment_method",
+    #                     "transaction_id",
+    #                     "status",
+    #                     "created_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["order_id", "int", "NO", "MUL", None, ""],
+    #                     ["amount", "decimal(10,2)", "NO", "", None, ""],
+    #                     ["payment_method", "varchar(50)", "NO", "", None, ""],
+    #                     ["transaction_id", "varchar(100)", "NO", "UNI", None, ""],
+    #                     ["status", "varchar(50)", "NO", "", "pending", ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "reviews": {
+    #                 "columns": [
+    #                     "id",
+    #                     "product_id",
+    #                     "user_id",
+    #                     "rating",
+    #                     "title",
+    #                     "comment",
+    #                     "created_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["product_id", "int", "NO", "MUL", None, ""],
+    #                     ["user_id", "int", "NO", "MUL", None, ""],
+    #                     ["rating", "int", "NO", "", None, ""],
+    #                     ["title", "varchar(200)", "YES", "", None, ""],
+    #                     ["comment", "text", "YES", "", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "addresses": {
+    #                 "columns": [
+    #                     "id",
+    #                     "user_id",
+    #                     "type",
+    #                     "street",
+    #                     "city",
+    #                     "state",
+    #                     "zip_code",
+    #                     "country",
+    #                     "created_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["user_id", "int", "NO", "MUL", None, ""],
+    #                     ["type", "varchar(20)", "NO", "", "shipping", ""],
+    #                     ["street", "varchar(200)", "NO", "", None, ""],
+    #                     ["city", "varchar(100)", "NO", "", None, ""],
+    #                     ["state", "varchar(100)", "NO", "", None, ""],
+    #                     ["zip_code", "varchar(20)", "NO", "", None, ""],
+    #                     ["country", "varchar(100)", "NO", "", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "admin_users": {
+    #                 "columns": [
+    #                     "id",
+    #                     "username",
+    #                     "password_hash",
+    #                     "email",
+    #                     "role",
+    #                     "last_login",
+    #                     "created_at",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["username", "varchar(50)", "NO", "UNI", None, ""],
+    #                     ["password_hash", "varchar(255)", "NO", "", None, ""],
+    #                     ["email", "varchar(100)", "NO", "UNI", None, ""],
+    #                     ["role", "varchar(50)", "NO", "", "viewer", ""],
+    #                     ["last_login", "timestamp", "YES", "", None, ""],
+    #                     [
+    #                         "created_at",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #         }
+    #     },
+    #     "shophub_logs": {
+    #         "tables": {
+    #             "access_logs": {
+    #                 "columns": [
+    #                     "id",
+    #                     "user_id",
+    #                     "ip_address",
+    #                     "action",
+    #                     "endpoint",
+    #                     "timestamp",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["user_id", "int", "YES", "MUL", None, ""],
+    #                     ["ip_address", "varchar(45)", "NO", "", None, ""],
+    #                     ["action", "varchar(100)", "NO", "", None, ""],
+    #                     ["endpoint", "varchar(255)", "NO", "", None, ""],
+    #                     [
+    #                         "timestamp",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #             "error_logs": {
+    #                 "columns": [
+    #                     "id",
+    #                     "error_type",
+    #                     "message",
+    #                     "stack_trace",
+    #                     "timestamp",
+    #                 ],
+    #                 "column_defs": [
+    #                     ["id", "int", "NO", "PRI", None, "auto_increment"],
+    #                     ["error_type", "varchar(100)", "NO", "", None, ""],
+    #                     ["message", "text", "NO", "", None, ""],
+    #                     ["stack_trace", "text", "YES", "", None, ""],
+    #                     [
+    #                         "timestamp",
+    #                         "timestamp",
+    #                         "NO",
+    #                         "",
+    #                         "CURRENT_TIMESTAMP",
+    #                         "DEFAULT_GENERATED",
+    #                     ],
+    #                 ],
+    #                 "rows": [],
+    #             },
+    #         }
+    #     },
+    # }
+    # NOTE: current_db intentionally left as None here.
+    # Client must run `USE shophub;` etc.
 
     def create_database(self, db_name: str) -> bool:
         if db_name.lower() not in self.databases:
@@ -483,7 +487,7 @@ class ShopHubDatabase:
         return []
 
     def get_state_summary(self) -> str:
-        summary = f"ShopHub E-commerce Database System\n"
+        summary = "ShopHub E-commerce Database System\n"
         summary += f"Current Database: {self.current_db}\n"
         summary += f"Available Databases: {', '.join(self.list_databases())}\n\n"
 
@@ -496,7 +500,6 @@ class ShopHubDatabase:
                     row_count = len(table_info.get("rows", []))
                     col_count = len(table_info.get("columns", []))
                     summary += f"  - {table}: {row_count} rows, {col_count} columns\n"
-                    # Add column names for DESCRIBE queries
                     cols = table_info.get("columns", [])
                     summary += f"    Columns: {', '.join(cols)}\n"
 
@@ -506,9 +509,12 @@ class ShopHubDatabase:
 class ShopHubDBController:
     """Intelligent controller for ShopHub MySQL honeypot"""
 
+    NO_DB_ERROR = "ERROR 1046 (3D000): No database selected"
+
     def __init__(self):
         self.db_state = ShopHubDatabase()
         self.sessions = {}
+        self.kafka_manager = HoneypotKafkaManager()
 
     def _get_session(self, session_id: str) -> Dict[str, Any]:
         if session_id not in self.sessions:
@@ -523,11 +529,11 @@ class ShopHubDBController:
     def _classify_query(self, query: str) -> str:
         q_upper = query.upper().strip()
 
-        if any(x in q_upper for x in ["DESCRIBE", "DESC"]):
+        if re.match(r"^\s*(DESCRIBE|DESC)\b", q_upper):
             return "describe"
-        elif any(x in q_upper for x in ["SELECT", "SHOW", "EXPLAIN"]):
+        elif re.match(r"^\s*(SELECT|SHOW|EXPLAIN)\b", q_upper):
             return "read"
-        elif any(x in q_upper for x in ["INSERT", "UPDATE", "DELETE"]):
+        elif re.match(r"^\s*(INSERT|UPDATE|DELETE)\b", q_upper):
             return "write"
         elif "CREATE DATABASE" in q_upper or "CREATE SCHEMA" in q_upper:
             return "create_db"
@@ -539,7 +545,7 @@ class ShopHubDBController:
             return "drop_table"
         elif "ALTER" in q_upper:
             return "alter"
-        elif any(x in q_upper for x in ["GRANT", "REVOKE"]):
+        elif re.match(r"^\s*(GRANT|REVOKE)\b", q_upper):
             return "admin"
         elif "USE" in q_upper:
             return "use_db"
@@ -715,23 +721,42 @@ class ShopHubDBController:
 
         return False, "Query OK"
 
+    async def _finalize_query(
+        self,
+        session_id: str,
+        query: str,
+        intent: str,
+        response: Any,
+        delay: float,
+    ):
+        """Finalization wrapper: send Kafka events and return DB response."""
+        try:
+            payload = {
+                "session_id": session_id,
+                "query": query,
+                "intent": intent,
+                "response": response,
+                "delay": delay,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            self.kafka_manager.send(topic="DBtoHTTP", value=payload)
+            self.kafka_manager.send(topic="DBtoSSH", value=payload)
+
+        except Exception as e:
+            print(f"[DBController] Kafka send error: {e}")
+
+        return {"response": response, "delay": delay}
+
     async def get_action_for_query(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
         query = event.get("query", "")
-        session = self._get_session(session_id)
-
-        session["query_history"].append(query)
-        if len(session["query_history"]) > 20:
-            session["query_history"] = session["query_history"][-20:]
-
         intent = self._classify_query(query)
-        is_suspicious = self._is_suspicious(query)
 
-        if is_suspicious:
-            session["suspicious_count"] += 1
-
-        # Handle state-changing queries
+        # ------------------------
+        # STATE-CHANGING QUERIES
+        # ------------------------
         if intent in [
             "create_db",
             "drop_db",
@@ -741,153 +766,163 @@ class ShopHubDBController:
             "write",
         ]:
             success, message = self._execute_state_change(query, intent)
-            delay = 0.1 if is_suspicious else 0.05
-            return {
-                "response": message,
-                "delay": delay,
-                "disconnect": session["suspicious_count"] > 10,
-            }
+            return await self._finalize_query(
+                session_id,
+                query,
+                intent,
+                message,
+                0.05,
+            )
 
-        # Handle DESCRIBE queries directly
+        # ------------------------
+        # DESCRIBE TABLE
+        # ------------------------
         if intent == "describe":
             table_name = self._parse_describe(query)
             if table_name:
-                table_info = self.db_state.get_table_data(table_name)
-                if table_info and "column_defs" in table_info:
-                    return {
-                        "response": {
-                            "columns": [
-                                "Field",
-                                "Type",
-                                "Null",
-                                "Key",
-                                "Default",
-                                "Extra",
-                            ],
-                            "rows": table_info["column_defs"],
-                        },
-                        "delay": 0.0,
-                        "disconnect": session["suspicious_count"] > 10,
-                    }
+                if not self.db_state.current_db:
+                    return await self._finalize_query(
+                        session_id, query, intent, self.NO_DB_ERROR, 0.0
+                    )
 
-        # Handle read queries
+                table_info = self.db_state.get_table_data(table_name)
+
+                if table_info and "column_defs" in table_info:
+                    response = {
+                        "columns": ["Field", "Type", "Null", "Key", "Default", "Extra"],
+                        "rows": table_info["column_defs"],
+                    }
+                    return await self._finalize_query(
+                        session_id, query, intent, response, 0.0
+                    )
+
+                # Unknown table
+                db = self.db_state.current_db or "shophub"
+                err = f"ERROR 1146 (42S02): Table '{db}.{table_name}' doesn't exist"
+                return await self._finalize_query(session_id, query, intent, err, 0.0)
+
+        # ------------------------
+        # READ QUERIES
+        # ------------------------
         if intent == "read":
             q_upper = query.upper()
 
             # SHOW DATABASES
             if "SHOW DATABASES" in q_upper or "SHOW SCHEMAS" in q_upper:
-                return {
-                    "response": {
-                        "columns": ["Database"],
-                        "rows": [[db] for db in self.db_state.list_databases()],
-                    },
-                    "delay": 0.0,
-                    "disconnect": session["suspicious_count"] > 10,
+                response = {
+                    "columns": ["Database"],
+                    "rows": [[db] for db in self.db_state.list_databases()],
                 }
-
-            # SHOW TABLES
-            if "SHOW TABLES" in q_upper:
-                tables = self.db_state.list_tables()
-                colname = f"Tables_in_{self.db_state.current_db}"
-                return {
-                    "response": {"columns": [colname], "rows": [[t] for t in tables]},
-                    "delay": 0.0,
-                    "disconnect": session["suspicious_count"] > 10,
-                }
+                return await self._finalize_query(
+                    session_id, query, intent, response, 0.0
+                )
 
             # SELECT DATABASE()
             if "DATABASE()" in q_upper or "SCHEMA()" in q_upper:
-                return {
-                    "response": {
-                        "columns": ["DATABASE()"],
-                        "rows": [[self.db_state.current_db]],
-                    },
-                    "delay": 0.0,
-                    "disconnect": session["suspicious_count"] > 10,
+                current = self.db_state.current_db
+                response = {
+                    "columns": ["DATABASE()"],
+                    "rows": [[current]],
                 }
+                return await self._finalize_query(
+                    session_id, query, intent, response, 0.0
+                )
+
+            # SHOW TABLES
+            if "SHOW TABLES" in q_upper:
+                if not self.db_state.current_db:
+                    return await self._finalize_query(
+                        session_id, query, intent, self.NO_DB_ERROR, 0.0
+                    )
+                tables = self.db_state.list_tables()
+                colname = f"Tables_in_{self.db_state.current_db}"
+                response = {
+                    "columns": [colname],
+                    "rows": [[t] for t in tables],
+                }
+                return await self._finalize_query(
+                    session_id, query, intent, response, 0.0
+                )
 
             # SELECT ... FROM table
             table_name = self._parse_select(query)
             if table_name:
+                if not self.db_state.current_db:
+                    return await self._finalize_query(
+                        session_id, query, intent, self.NO_DB_ERROR, 0.0
+                    )
+
                 table_info = self.db_state.get_table_data(table_name)
                 if table_info:
                     columns = table_info.get("columns", [])
                     rows = table_info.get("rows", [])
 
-                    # If table is empty or has very few rows, use LLM to generate data
+                    # If table has fewer than 5 rows → use LLM to generate synthetic data
                     if len(rows) < 5:
-                        print(
-                            f"[controller] Table '{table_name}' has {len(rows)} rows, using LLM to generate data"
-                        )
-                        # Use LLM for data generation
-                        db_context = self.db_state.get_state_summary()
-                        delay = (
-                            min(0.5 + session["suspicious_count"] * 0.2, 2.0)
-                            if is_suspicious
-                            else 0.0
-                        )
-
                         try:
-                            raw_response = await generate_db_response_async(
+                            db_context = self.db_state.get_state_summary()
+                            llm_raw = await generate_db_response_async(
                                 query=query,
                                 intent=intent,
                                 db_context=db_context,
                             )
 
-                            print(
-                                f"[controller] LLM raw response type: {type(raw_response)}"
-                            )
-                            print(
-                                f"[controller] LLM raw response (first 200 chars): {str(raw_response)[:200]}"
-                            )
-
-                            # Try to parse as JSON
-                            if isinstance(raw_response, str):
-                                raw_response = raw_response.strip()
-                                if raw_response.startswith("{"):
+                            # parse JSON-like response if needed
+                            if isinstance(llm_raw, str):
+                                text = llm_raw.strip()
+                                if text.startswith("{"):
                                     try:
-                                        response = json.loads(raw_response)
-                                        print(
-                                            f"[controller] Successfully parsed JSON with keys: {response.keys()}"
-                                        )
-                                        # Validate it has the right structure
-                                        if "columns" in response and "rows" in response:
-                                            print(
-                                                f"[controller] Valid result set: {len(response['columns'])} columns, {len(response['rows'])} rows"
-                                            )
-                                        else:
-                                            print(
-                                                f"[controller] WARNING: JSON missing columns/rows keys"
-                                            )
-                                            response = {"text": raw_response}
-                                    except json.JSONDecodeError as e:
-                                        print(f"[controller] JSON parse failed: {e}")
-                                        response = {"text": raw_response}
+                                        parsed = json.loads(text)
+                                        llm_raw = parsed
+                                    except Exception:
+                                        llm_raw = {"text": text}
                                 else:
-                                    response = {"text": raw_response}
-                            else:
-                                response = raw_response
+                                    llm_raw = {"text": text}
+
+                            response = llm_raw
 
                         except Exception as e:
-                            print(f"[controller] LLM generation error: {e}")
-                            response = {
-                                "text": f"ERROR: Internal server error - {str(e)}"
-                            }
+                            response = {"text": f"LLM error: {e}"}
 
-                        return {
-                            "response": response,
-                            "delay": delay,
-                            "disconnect": session["suspicious_count"] > 10,
-                        }
+                        return await self._finalize_query(
+                            session_id, query, intent, response, 0.1
+                        )
 
-                    # Simple LIMIT support for existing data
+                    # LIMIT support
                     limit_match = re.search(r"LIMIT\s+(\d+)", query, re.IGNORECASE)
                     if limit_match:
                         limit = int(limit_match.group(1))
                         rows = rows[:limit]
 
-                    return {
-                        "response": {"columns": columns, "rows": rows},
-                        "delay": 0.0,
-                        "disconnect": session["suspicious_count"] > 10,
-                    }
+                    response = {"columns": columns, "rows": rows}
+
+                    return await self._finalize_query(
+                        session_id, query, intent, response, 0.0
+                    )
+
+                # Unknown table
+                db = self.db_state.current_db or "shophub"
+                err = f"ERROR 1146 (42S02): Table '{db}.{table_name}' doesn't exist"
+                return await self._finalize_query(session_id, query, intent, err, 0.0)
+
+        # ------------------------
+        # LLM FALLBACK
+        # ------------------------
+        try:
+            db_context = self.db_state.get_state_summary()
+            fallback = await generate_db_response_async(
+                query=query,
+                intent=intent,
+                db_context=db_context,
+            )
+        except Exception as e:
+            fallback = {"text": f"ERROR: {e}"}
+
+        delay = 0.05 + float(np.random.rand()) * 0.2
+        return await self._finalize_query(
+            session_id,
+            query,
+            intent,
+            fallback,
+            delay,
+        )

@@ -1,127 +1,18 @@
 # shophub_controller.py
 from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 from llm_gen import generate_shophub_response_async
+from kafka_manager import HoneypotKafkaManager
+from file_structure import PAGES, PRODUCTS
 
 
 class ShopHubState:
     """Maintains ShopHub e-commerce website state"""
 
     def __init__(self):
-        self.pages = self._initialize_pages()
-        self.products = self._initialize_products()
+        self.pages = PAGES
+        self.products = PRODUCTS
         self.api_endpoints = self._initialize_api_endpoints()
-
-    def _initialize_pages(self) -> dict:
-        """Initialize ShopHub pages"""
-        return {
-            "/": {
-                "title": "ShopHub - Your Online Shopping Destination",
-                "type": "home",
-                "exists": True,
-            },
-            "/index.html": {
-                "title": "ShopHub - Your Online Shopping Destination",
-                "type": "home",
-                "exists": True,
-            },
-            "/products": {
-                "title": "All Products - ShopHub",
-                "type": "product_listing",
-                "exists": True,
-            },
-            "/products/electronics": {
-                "title": "Electronics - ShopHub",
-                "type": "category",
-                "exists": True,
-            },
-            "/products/clothing": {
-                "title": "Clothing - ShopHub",
-                "type": "category",
-                "exists": True,
-            },
-            "/products/home": {
-                "title": "Home & Garden - ShopHub",
-                "type": "category",
-                "exists": True,
-            },
-            "/cart": {
-                "title": "Shopping Cart - ShopHub",
-                "type": "cart",
-                "exists": True,
-            },
-            "/checkout": {
-                "title": "Checkout - ShopHub",
-                "type": "checkout",
-                "exists": True,
-            },
-            "/login": {"title": "Login - ShopHub", "type": "auth", "exists": True},
-            "/register": {
-                "title": "Register - ShopHub",
-                "type": "auth",
-                "exists": True,
-            },
-            "/account": {
-                "title": "My Account - ShopHub",
-                "type": "account",
-                "exists": True,
-            },
-            "/orders": {
-                "title": "My Orders - ShopHub",
-                "type": "orders",
-                "exists": True,
-            },
-            "/admin": {
-                "title": "Admin Panel - ShopHub",
-                "type": "admin",
-                "exists": True,
-            },
-            "/admin/login": {
-                "title": "Admin Login - ShopHub",
-                "type": "admin",
-                "exists": True,
-            },
-            "/admin/dashboard": {
-                "title": "Admin Dashboard - ShopHub",
-                "type": "admin",
-                "exists": True,
-            },
-            "/about": {"title": "About Us - ShopHub", "type": "static", "exists": True},
-            "/contact": {
-                "title": "Contact Us - ShopHub",
-                "type": "static",
-                "exists": True,
-            },
-            "/help": {
-                "title": "Help Center - ShopHub",
-                "type": "static",
-                "exists": True,
-            },
-            "/robots.txt": {"type": "static", "exists": True},
-            "/sitemap.xml": {"type": "static", "exists": True},
-        }
-
-    def _initialize_products(self) -> dict:
-        """Initialize sample products"""
-        return {
-            "1": {
-                "id": 1,
-                "name": "Wireless Bluetooth Headphones",
-                "price": 79.99,
-                "category": "electronics",
-            },
-            "2": {
-                "id": 2,
-                "name": "Cotton T-Shirt",
-                "price": 24.99,
-                "category": "clothing",
-            },
-            "3": {
-                "id": 3,
-                "name": "LED Desk Lamp",
-                "price": 39.99,
-                "category": "home",
-            },
-        }
 
     def _initialize_api_endpoints(self) -> dict:
         """Initialize API endpoints"""
@@ -195,6 +86,7 @@ class ShopHubController:
     def __init__(self):
         self.state = ShopHubState()
         self.sessions = {}
+        self.kafka_manager = HoneypotKafkaManager()
 
     def _get_session(self, session_id: str) -> Dict[str, Any]:
         """Get or create session"""
@@ -342,53 +234,81 @@ class ShopHubController:
         else:
             return "text/html; charset=utf-8"
 
+    async def _finalize_request(
+        self,
+        session_id: str,
+        method: str,
+        path: str,
+        intent: str,
+        status_code: int,
+        headers: Dict[str, str],
+        body: str,
+        delay: float,
+    ):
+        """Finalization step: send Kafka events + return unified output."""
+        try:
+            payload = {
+                "session_id": session_id,
+                "method": method,
+                "path": path,
+                "intent": intent,
+                "status_code": status_code,
+                "headers": headers,
+                "body": body,
+                "delay": delay,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            # Mirror the architecture of SSH/DB finalize
+            self.kafka_manager.send(topic="HTTPtoSSH", value=payload)
+            self.kafka_manager.send(topic="HTTPtoDB", value=payload)
+
+        except Exception as e:
+            print(f"[HTTPController] Kafka send error: {e}")
+
+        return {
+            "status_code": status_code,
+            "headers": headers,
+            "body": body,
+            "delay": delay,
+        }
+
     async def get_action_for_request(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Main method to handle requests"""
+        # Extract request fields
         method = event.get("method", "GET")
         path = event.get("path", "/")
         headers = event.get("headers", {})
-        body = event.get("body")
-
-        session = self._get_session(session_id)
-
-        # Update session
-        session["request_history"].append(
-            {"method": method, "path": path, "ts": event.get("ts")}
-        )
-        if len(session["request_history"]) > 50:
-            session["request_history"] = session["request_history"][-50:]
-
-        session["user_agent"] = headers.get("user-agent")
-        session["ip"] = event.get("remote_addr")
+        body = event.get("body", None)
 
         # Classify request
         intent = self._classify_request(method, path, headers)
-        is_suspicious = self._is_suspicious(method, path, headers, body)
 
-        if is_suspicious:
-            session["suspicious_count"] += 1
-
-        # Determine response
+        # Basic path check
         path_exists = self.state.page_exists(path)
-        status_code = self._determine_status_code(intent, is_suspicious, path_exists)
+
+        # Determine status
+        status_code = self._determine_status_code(
+            intent=intent,
+            is_suspicious=False,  # meta/suspicious system is removed
+            path_exists=path_exists,
+        )
+
+        # Infer content type
         content_type = self._get_content_type(path, intent)
 
-        # Build context
+        # Build server context
         page_info = self.state.get_page_info(path)
         server_context = self.state.get_state_summary()
+
         if page_info:
             server_context += f"\nPage: {path}\nPage info: {page_info}\n"
 
-        # Delay for suspicious requests
-        delay = 0.0
-        if is_suspicious:
-            delay = min(0.3 + session["suspicious_count"] * 0.1, 2.0)
+        # Default delay
+        delay = 0.05  # static small delay for realism
 
-        should_disconnect = session["suspicious_count"] > 20
-
-        # Generate response
+        # Generate response body (LLM fallback)
         try:
             response_body = await generate_shophub_response_async(
                 method=method,
@@ -399,14 +319,15 @@ class ShopHubController:
                 status_code=status_code,
                 server_context=server_context,
             )
+
         except Exception:
+            status_code = 500
             response_body = (
                 "<!DOCTYPE html><html><head><title>500 Error</title></head>"
                 "<body><h1>500 Internal Server Error</h1></body></html>"
             )
-            status_code = 500
 
-        # Build headers
+        # Standard headers
         response_headers = {
             "Server": "nginx/1.18.0",
             "Content-Type": content_type,
@@ -415,17 +336,17 @@ class ShopHubController:
             "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "SAMEORIGIN",
-            "Connection": "close" if should_disconnect else "keep-alive",
+            "Connection": "keep-alive",
         }
 
-        action = {
-            "status_code": status_code,
-            "headers": response_headers,
-            "body": response_body,
-            "delay": delay,
-        }
-
-        if should_disconnect:
-            action["disconnect"] = True
-
-        return action
+        # Finalized output (Kafka + return)
+        return await self._finalize_request(
+            session_id=session_id,
+            method=method,
+            path=path,
+            intent=intent,
+            status_code=status_code,
+            headers=response_headers,
+            body=response_body,
+            delay=delay,
+        )

@@ -1,0 +1,82 @@
+services:
+  ssh_honeypot:
+    build: ./ssh_server
+    container_name: ssh_honeypot
+    restart: unless-stopped
+    ports:
+      - "5555:5555"
+    env_file:
+      - .env
+    volumes:
+      - ssh_cache:/app/cache
+      - ./kafka_manager.py:/app/kafka_manager.py
+      - ./file_structure.py:/app/file_structure.py
+    depends_on:
+      sigilhive_kafka:
+        condition: service_healthy
+
+  http_honeypot:
+    build: ./http
+    container_name: http_honeypot
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    env_file:
+      - .env
+    volumes:
+      - http_cache:/app/cache
+      - ./kafka_manager.py:/app/kafka_manager.py
+      - ./file_structure.py:/app/file_structure.py
+    depends_on:
+      sigilhive_kafka:
+        condition: service_healthy
+
+  db_honeypot:
+    build: ./database
+    container_name: db_honeypot
+    restart: unless-stopped
+    ports:
+      - "2224:2224"
+    env_file:
+      - .env
+    volumes:
+      - db_cache:/app/cache
+      - ./kafka_manager.py:/app/kafka_manager.py
+      - ./file_structure.py:/app/file_structure.py
+    depends_on:
+      sigilhive_kafka:
+        condition: service_healthy
+
+  sigilhive_kafka:
+    image: confluentinc/cp-kafka:7.8.3
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: '/var/lib/kafka/data'
+      CLUSTER_ID: 'WmV3Z3hOQkFNRVV3TURBd0xUQTJNVEV3TWp'
+    volumes:
+      - kafka_kraft:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  ssh_cache:
+  http_cache:
+  db_cache:
+  kafka_kraft: {}

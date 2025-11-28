@@ -1,6 +1,8 @@
+numpy
 aiomysql
 langchain
 langchain-google-genai
 python-dotenv
 aiofiles
 uvloop
+confluent_kafka

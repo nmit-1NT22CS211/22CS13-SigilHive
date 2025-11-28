@@ -306,6 +306,7 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+        print("✅ [honeypot] ShopHub HTTPS honeypot started successfully")
     except KeyboardInterrupt:
         print("\n[honeypot] stopped by user")
     except Exception as e:

@@ -230,7 +230,7 @@ NOW GENERATE THE RESPONSE FOR: {method} {path} (Status: {status_code}, Intent: {
 
 def _get_llm_client():
     return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash-exp",
+        model="gemini-2.5-flash",
         temperature=0.7,  # Increased for more variety
         max_output_tokens=4096,
         api_key=GEMINI_KEY,

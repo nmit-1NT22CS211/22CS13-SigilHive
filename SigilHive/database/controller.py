@@ -15,7 +15,6 @@ class ShopHubDatabase:
         self.databases = DATABASES
         # IMPORTANT: no default DB selected on startup (matches MySQL semantics)
         self.current_db: Optional[str] = None
-        self._initialize_shophub()
 
     # def _initialize_shophub(self):
     #     """Initialize ShopHub e-commerce databases and tables"""
@@ -740,6 +739,7 @@ class ShopHubDBController:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
+            payload = json.dumps(payload, default=str)
             self.kafka_manager.send(topic="DBtoHTTP", value=payload)
             self.kafka_manager.send(topic="DBtoSSH", value=payload)
 

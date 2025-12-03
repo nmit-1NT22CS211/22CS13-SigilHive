@@ -6,6 +6,11 @@ from kafka_manager import HoneypotKafkaManager
 from file_structure import PAGES, PRODUCTS
 
 
+def log(message: str):
+    """Helper to ensure immediate output"""
+    print(message, flush=True)
+
+
 class ShopHubState:
     """Maintains ShopHub e-commerce website state"""
 
@@ -29,19 +34,15 @@ class ShopHubState:
 
     def page_exists(self, path: str) -> bool:
         """Check if a page exists"""
-        # Normalize path
         if path.endswith("/") and path != "/":
             path = path[:-1]
 
-        # Check exact match
         if path in self.pages:
             return True
 
-        # Check API endpoints
         if path.startswith("/api/"):
             if path in self.api_endpoints:
                 return True
-            # Check pattern matches (e.g., /api/products/123)
             for endpoint in self.api_endpoints:
                 if "{id}" in endpoint:
                     pattern = endpoint.replace("{id}", r"\d+")
@@ -50,7 +51,6 @@ class ShopHubState:
                     if re.match(pattern, path):
                         return True
 
-        # Check product pages
         if path.startswith("/product/"):
             return True
 
@@ -84,9 +84,11 @@ class ShopHubController:
     """Controller for ShopHub HTTPS honeypot"""
 
     def __init__(self):
+        log("[Controller] Initializing ShopHub controller...")
         self.state = ShopHubState()
         self.sessions = {}
         self.kafka_manager = HoneypotKafkaManager()
+        log("[Controller] ShopHub controller ready")
 
     def _get_session(self, session_id: str) -> Dict[str, Any]:
         """Get or create session"""
@@ -105,42 +107,33 @@ class ShopHubController:
         """Classify request type"""
         path_lower = path.lower()
 
-        # Home/landing pages
         if path in ["/", "/index.html"]:
             return "home"
 
-        # Product pages
         if "/product" in path_lower:
             return "product_page"
 
-        # Shopping flow
         if path in ["/cart", "/checkout"]:
             return "shopping"
 
-        # Auth pages
         if any(x in path_lower for x in ["/login", "/register", "/account"]):
             return "auth"
 
-        # Admin
         if "/admin" in path_lower:
             return "admin"
 
-        # API
         if path.startswith("/api/"):
             return "api"
 
-        # Static resources
         if any(
             path_lower.endswith(x)
             for x in [".css", ".js", ".jpg", ".png", ".gif", ".ico", ".woff", ".ttf"]
         ):
             return "static"
 
-        # Static pages
         if path in ["/about", "/contact", "/help", "/robots.txt", "/sitemap.xml"]:
             return "static_page"
 
-        # Suspicious patterns
         if any(
             x in path_lower
             for x in ["/.git", "/.env", "/config", "/backup", "wp-", "phpmyadmin"]
@@ -254,17 +247,16 @@ class ShopHubController:
                 "intent": intent,
                 "status_code": status_code,
                 "headers": headers,
-                "body": body,
-                "delay": delay,
+                "body": body[:1000] if body else "",  # Truncate body for Kafka
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            # Mirror the architecture of SSH/DB finalize
+            log(f"[Controller] Sending to Kafka: {method} {path} -> {status_code}")
             self.kafka_manager.send(topic="HTTPtoSSH", value=payload)
             self.kafka_manager.send(topic="HTTPtoDB", value=payload)
 
         except Exception as e:
-            print(f"[HTTPController] Kafka send error: {e}")
+            log(f"[Controller] Kafka send error: {e}")
 
         return {
             "status_code": status_code,
@@ -276,7 +268,7 @@ class ShopHubController:
     async def get_action_for_request(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
-        # Extract request fields
+        """Main request handler"""
         method = event.get("method", "GET")
         path = event.get("path", "/")
         headers = event.get("headers", {})
@@ -284,14 +276,12 @@ class ShopHubController:
 
         # Classify request
         intent = self._classify_request(method, path, headers)
-
-        # Basic path check
         path_exists = self.state.page_exists(path)
 
         # Determine status
         status_code = self._determine_status_code(
             intent=intent,
-            is_suspicious=False,  # meta/suspicious system is removed
+            is_suspicious=False,
             path_exists=path_exists,
         )
 
@@ -305,10 +295,9 @@ class ShopHubController:
         if page_info:
             server_context += f"\nPage: {path}\nPage info: {page_info}\n"
 
-        # Default delay
-        delay = 0.05  # static small delay for realism
+        delay = 0.05
 
-        # Generate response body (LLM fallback)
+        # Generate response body
         try:
             response_body = await generate_shophub_response_async(
                 method=method,
@@ -320,7 +309,8 @@ class ShopHubController:
                 server_context=server_context,
             )
 
-        except Exception:
+        except Exception as e:
+            log(f"[Controller] LLM generation error: {e}")
             status_code = 500
             response_body = (
                 "<!DOCTYPE html><html><head><title>500 Error</title></head>"
@@ -339,7 +329,6 @@ class ShopHubController:
             "Connection": "keep-alive",
         }
 
-        # Finalized output (Kafka + return)
         return await self._finalize_request(
             session_id=session_id,
             method=method,

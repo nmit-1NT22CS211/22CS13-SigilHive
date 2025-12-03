@@ -7,6 +7,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from controller import ShopHubDBController
+from kafka_manager import HoneypotKafkaManager
 
 # Configuration
 MYSQL_HOST = "0.0.0.0"
@@ -705,9 +706,23 @@ async def main():
         print("[honeypot] server shut down")
 
 
+async def consumer():
+    kafka_manager = HoneypotKafkaManager()
+    topics = ["HTTPtoDB", "SSHtoDB"]
+    kafka_manager.subscribe(topics)
+    await kafka_manager.consume()
+
+
+async def start():
+    await asyncio.gather(
+        main(),
+        consumer(),
+    )
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(start())
     except KeyboardInterrupt:
         print("\n[honeypot] stopped by user")
     except Exception as e:

@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from controller import Controller, SHOPHUB_STRUCTURE
+from kafka_manager import HoneypotKafkaManager
 
 # Load environment variables from .env file
 load_dotenv()
@@ -438,8 +439,24 @@ async def start_server():
             pass
 
 
+async def consumer():
+    kafka_manager = HoneypotKafkaManager()
+    topics = ["HTTPtoSSH", "DBtoSSH"]
+    kafka_manager.subscribe(topics)
+    await kafka_manager.consume()
+
+
+async def start():
+    await asyncio.gather(
+        start_server(),
+        consumer(),
+    )
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(start_server())
-    except (KeyboardInterrupt, SystemExit):
-        print("\n[honeypot] shutting down gracefully...")
+        asyncio.run(start())
+    except KeyboardInterrupt:
+        print("\n[honeypot] stopped by user")
+    except Exception as e:
+        print(f"[honeypot] error: {e}")

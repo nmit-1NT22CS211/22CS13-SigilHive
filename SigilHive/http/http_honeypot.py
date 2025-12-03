@@ -1,11 +1,15 @@
-# https_honeypot.py
 import asyncio
 import os
+import sys
 import ssl
 import uuid
 import time
 from datetime import datetime, timezone
 from controller import ShopHubController
+from kafka_manager import HoneypotKafkaManager
+
+# Force unbuffered output
+sys.stdout.reconfigure(line_buffering=True)
 
 # Configuration
 HTTPS_HOST = "0.0.0.0"
@@ -13,6 +17,11 @@ HTTPS_PORT = int(os.getenv("HTTPS_PORT", "8443"))
 
 # Use ShopHub controller
 controller = ShopHubController()
+
+
+def log(message: str, flush: bool = True):
+    """Helper function to ensure logs are printed immediately"""
+    print(message, flush=flush)
 
 
 class HTTPSProtocol(asyncio.Protocol):
@@ -30,7 +39,7 @@ class HTTPSProtocol(asyncio.Protocol):
         self.transport = transport
         peername = transport.get_extra_info("peername")
         self.remote_addr = peername[0] if peername else "unknown"
-        print(f"[https][{self.session_id}] connection from {peername}")
+        log(f"[https][{self.session_id}] connection from {peername}")
 
     def data_received(self, data):
         self._buffer += data
@@ -88,7 +97,7 @@ class HTTPSProtocol(asyncio.Protocol):
                 )
 
             except Exception as e:
-                print(f"[https][{self.session_id}] parse error: {e}")
+                log(f"[https][{self.session_id}] parse error: {e}")
                 self._buffer = self._buffer[header_end + 4 :]
                 continue
 
@@ -96,7 +105,7 @@ class HTTPSProtocol(asyncio.Protocol):
         self, method: str, path: str, version: str, headers: dict, body: str = None
     ):
         """Handle HTTPS request using ShopHub controller"""
-        print(f"[https][{self.session_id}] {method} {path}")
+        log(f"[https][{self.session_id}] {method} {path}")
 
         event = {
             "session_id": self.session_id,
@@ -115,7 +124,7 @@ class HTTPSProtocol(asyncio.Protocol):
         try:
             action = await controller.get_action_for_request(self.session_id, event)
         except Exception as e:
-            print(f"[https][{self.session_id}] controller error: {e}")
+            log(f"[https][{self.session_id}] controller error: {e}")
             action = {
                 "status_code": 500,
                 "headers": {"Content-Type": "text/html", "Server": "nginx/1.18.0"},
@@ -137,9 +146,7 @@ class HTTPSProtocol(asyncio.Protocol):
 
         # Disconnect if needed
         if action.get("disconnect"):
-            print(
-                f"[https][{self.session_id}] disconnecting due to suspicious activity"
-            )
+            log(f"[https][{self.session_id}] disconnecting due to suspicious activity")
             self.transport.close()
 
     def send_response(self, status_code: int, headers: dict, body: str):
@@ -182,13 +189,13 @@ class HTTPSProtocol(asyncio.Protocol):
         try:
             self.transport.write(response.encode("utf-8"))
         except Exception as e:
-            print(f"[https][{self.session_id}] send error: {e}")
+            log(f"[https][{self.session_id}] send error: {e}")
 
     def connection_lost(self, exc):
         if exc:
-            print(f"[https][{self.session_id}] connection lost: {exc}")
+            log(f"[https][{self.session_id}] connection lost: {exc}")
         else:
-            print(f"[https][{self.session_id}] connection closed")
+            log(f"[https][{self.session_id}] connection closed")
 
 
 def generate_self_signed_cert(certfile="shophub_cert.pem", keyfile="shophub_key.pem"):
@@ -204,7 +211,7 @@ def generate_self_signed_cert(certfile="shophub_cert.pem", keyfile="shophub_key.
         from cryptography.hazmat.primitives import serialization
         import datetime as dt
 
-        print("[https] Generating self-signed certificate for ShopHub...")
+        log("[https] Generating self-signed certificate for ShopHub...")
 
         # Generate private key
         private_key = rsa.generate_private_key(
@@ -258,16 +265,20 @@ def generate_self_signed_cert(certfile="shophub_cert.pem", keyfile="shophub_key.
         with open(certfile, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-        print(f"[https] Certificate generated: {certfile}, {keyfile}")
+        log(f"[https] Certificate generated: {certfile}, {keyfile}")
         return certfile, keyfile
 
     except ImportError:
-        print("[https] ERROR: cryptography package not installed")
-        print("[https] Install with: pip install cryptography")
+        log("[https] ERROR: cryptography package not installed")
+        log("[https] Install with: pip install cryptography")
         raise
 
 
 async def main():
+    log("=" * 60)
+    log("✅ ShopHub HTTPS Honeypot Starting...")
+    log("=" * 60)
+
     loop = asyncio.get_running_loop()
 
     # Generate or load certificate
@@ -280,18 +291,20 @@ async def main():
     # Optional: Set minimum TLS version
     ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
-    print(f"[honeypot] Starting ShopHub HTTPS honeypot on {HTTPS_HOST}:{HTTPS_PORT}")
-    print(f"[honeypot] Using certificate: {certfile}")
-    print("[honeypot] Simulating: ShopHub E-commerce Platform")
+    log(f"[honeypot] Starting ShopHub HTTPS honeypot on {HTTPS_HOST}:{HTTPS_PORT}")
+    log(f"[honeypot] Using certificate: {certfile}")
+    log("[honeypot] Simulating: ShopHub E-commerce Platform")
 
     # Start HTTPS honeypot with SSL
     server = await loop.create_server(
         HTTPSProtocol, HTTPS_HOST, HTTPS_PORT, ssl=ssl_context
     )
 
-    print(f"[honeypot] HTTPS honeypot listening on https://{HTTPS_HOST}:{HTTPS_PORT}")
-    print(f"[honeypot] Access with: curl -k https://localhost:{HTTPS_PORT}")
-    print(f"[honeypot] Or visit: https://localhost:{HTTPS_PORT}")
+    log("=" * 60)
+    log(f"✅ HTTPS honeypot listening on https://{HTTPS_HOST}:{HTTPS_PORT}")
+    log(f"   Access with: curl -k https://localhost:{HTTPS_PORT}")
+    log(f"   Or visit: https://localhost:{HTTPS_PORT}")
+    log("=" * 60)
 
     try:
         await server.serve_forever()
@@ -300,14 +313,44 @@ async def main():
     finally:
         server.close()
         await server.wait_closed()
-        print("[honeypot] server shut down gracefully")
+        log("[honeypot] Server shut down gracefully")
+
+
+async def consumer():
+    log("[kafka] Starting Kafka consumer...")
+    kafka_manager = HoneypotKafkaManager()
+    topics = ["DBtoHTTP", "SSHtoHTTP"]
+    kafka_manager.subscribe(topics)
+    log(f"[kafka] Subscribed to topics: {topics}")
+    await kafka_manager.consume()
+
+
+async def start():
+    log("")
+    log("╔════════════════════════════════════════════════════════╗")
+    log("║     ShopHub Honeypot Boot Sequence                    ║")
+    log("╚════════════════════════════════════════════════════════╝")
+    log("")
+    log("🔧 Initializing HTTPS service...")
+    log("🔧 Initializing Kafka consumer...")
+    log("")
+
+    # Small delay to ensure logs are visible
+    await asyncio.sleep(0.1)
+
+    await asyncio.gather(
+        main(),
+        consumer(),
+    )
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
-        print("✅ [honeypot] ShopHub HTTPS honeypot started successfully")
+        asyncio.run(start())
     except KeyboardInterrupt:
-        print("\n[honeypot] stopped by user")
+        log("\n[honeypot] Stopped by user")
     except Exception as e:
-        print(f"[honeypot] runtime error: {e}")
+        log(f"[honeypot] Error: {e}")
+        import traceback
+
+        traceback.print_exc()

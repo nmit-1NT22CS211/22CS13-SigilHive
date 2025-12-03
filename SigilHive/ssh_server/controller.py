@@ -4,6 +4,7 @@ import asyncio
 import numpy as np
 import time
 import random
+import json
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from adaptive_response import AdaptiveResponseSystem
@@ -248,6 +249,7 @@ class Controller:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
+            payload = json.dumps(payload, default=str)
             self.kafka_manager.send(topic="SSHtoDB", value=payload)
             self.kafka_manager.send(topic="SSHtoHTTP", value=payload)
 

@@ -1174,6 +1174,48 @@ app.listen(PORT, () => {
 
 module.exports = app;
 """,
+    "~/shophub/.env": """# ShopHub Environment Variables - PRODUCTION
+# WARNING: Keep this file secure!
+
+# Server
+NODE_ENV=production
+PORT=3000
+HOST=0.0.0.0
+
+# Database
+DB_HOST=localhost
+DB_PORT=27017
+DB_NAME=shophub_prod
+DB_USER=shophub_user
+DB_PASS=<redacted>
+
+# Redis Cache
+REDIS_URL=redis://localhost:6379
+REDIS_PASSWORD=<redacted>
+
+# JWT Authentication
+JWT_SECRET=<redacted>
+JWT_EXPIRE=7d
+
+# Payment Gateway
+STRIPE_PUBLIC_KEY=pk_live_<redacted>
+STRIPE_SECRET_KEY=sk_live_<redacted>
+
+# Email Service
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=noreply@shophub.com
+SMTP_PASS=<redacted>
+
+# AWS S3
+AWS_ACCESS_KEY=<redacted>
+AWS_SECRET_KEY=<redacted>
+S3_BUCKET=shophub-uploads
+
+# Application
+CLIENT_URL=https://shophub.com
+API_URL=https://api.shophub.com
+""",
     "~/shophub/.env.example": """# Server
 NODE_ENV=development
 PORT=3000

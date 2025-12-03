@@ -1,0 +1,16 @@
+{
+  "incidents": [
+    {
+      "title": "SQL Injection Attack Wave",
+      "description": "Multiple SQL injection attempts detected targeting database honeypot",
+      "severity": "CRITICAL",
+      "status": "triggered"
+    },
+    {
+      "title": "Directory Traversal Reconnaissance",
+      "description": "Series of directory traversal attempts on HTTP honeypot",
+      "severity": "HIGH",
+      "status": "triggered"
+    }
+  ]
+}

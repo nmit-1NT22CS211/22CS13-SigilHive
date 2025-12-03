@@ -11,7 +11,7 @@ from kafka_manager import HoneypotKafkaManager
 
 # Configuration
 MYSQL_HOST = "0.0.0.0"
-MYSQL_PORT = int(os.getenv("MYSQL_PORT", "2224"))
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 
 # Password required by default now
 REQUIRE_PASSWORD = os.getenv("REQUIRE_PASSWORD", "true").lower() == "true"
@@ -708,7 +708,8 @@ async def main():
 
 async def consumer():
     kafka_manager = HoneypotKafkaManager()
-    topics = ["HTTPtoDB", "SSHtoDB"]
+    # Subscribe to honeypot-logs topic instead of non-existent HTTPtoDB/SSHtoDB
+    topics = ["honeypot-logs"]
     kafka_manager.subscribe(topics)
     await kafka_manager.consume()
 

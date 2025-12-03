@@ -37,13 +37,35 @@ services:
     container_name: db_honeypot
     restart: unless-stopped
     ports:
-      - "2224:2224"
+      - "2225:3306"
     env_file:
       - .env
     volumes:
       - db_cache:/app/cache
       - ./kafka_manager.py:/app/kafka_manager.py
       - ./file_structure.py:/app/file_structure.py
+    depends_on:
+      sigilhive_kafka:
+        condition: service_healthy
+
+  grafana_connector:
+    build: ./grafana_connector
+    container_name: grafana_connector
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      sigilhive_kafka:
+        condition: service_healthy
+
+  metrics_collector:
+    build: ./metrics_collector
+    container_name: metrics_collector
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PROMETHEUS_PUSHGATEWAY: http://prometheus-pushgateway:9091
     depends_on:
       sigilhive_kafka:
         condition: service_healthy

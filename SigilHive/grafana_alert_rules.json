@@ -1,0 +1,255 @@
+{
+  "alerts": [
+    {
+      "id": "sql-injection-critical",
+      "title": "🚨 CRITICAL: SQL Injection Attack Detected",
+      "condition": "C",
+      "data": [
+        {
+          "refId": "A",
+          "queryType": "",
+          "relativeTimeRange": {
+            "from": 600,
+            "to": 0
+          },
+          "datasourceUid": "loki-datasource-uid",
+          "expression": "{job=\"honeypot\", service=\"database\"} |= \"UNION\" or \"DROP\" or \"DELETE\"",
+          "hide": false
+        },
+        {
+          "refId": "B",
+          "queryType": "",
+          "expression": "A",
+          "datasourceUid": "-100",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [0],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A"]
+              },
+              "type": "query"
+            }
+          ],
+          "reducer": {
+            "params": [],
+            "type": "count"
+          },
+          "type": "reduce"
+        },
+        {
+          "refId": "C",
+          "expression": "B",
+          "datasourceUid": "-100",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [0],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["C"]
+              },
+              "type": "query"
+            }
+          ],
+          "reducer": {
+            "params": [],
+            "type": "last"
+          },
+          "type": "threshold"
+        }
+      ],
+      "noDataState": "NoData",
+      "execErrState": "Alerting",
+      "for": "1m",
+      "annotations": {
+        "description": "SQL injection attack detected in database honeypot",
+        "runbook_url": "https://sigilhive.example.com/runbooks/sql-injection",
+        "summary": "SQL Injection detected"
+      },
+      "labels": {
+        "severity": "critical",
+        "service": "database",
+        "team": "security"
+      }
+    },
+    {
+      "id": "admin-access-high",
+      "title": "⚠️ HIGH: Unauthorized Admin Access Attempt",
+      "condition": "C",
+      "data": [
+        {
+          "refId": "A",
+          "expression": "{job=\"honeypot\", service=\"http\"} |= \"admin\"",
+          "hide": false
+        },
+        {
+          "refId": "B",
+          "expression": "A",
+          "reducer": {
+            "type": "count"
+          },
+          "type": "reduce"
+        },
+        {
+          "refId": "C",
+          "expression": "B",
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [5],
+                "type": "gt"
+              }
+            }
+          ]
+        }
+      ],
+      "for": "2m",
+      "annotations": {
+        "description": "Multiple admin access attempts detected",
+        "summary": "Admin access probe"
+      },
+      "labels": {
+        "severity": "high",
+        "service": "http",
+        "team": "security"
+      }
+    },
+    {
+      "id": "traversal-high",
+      "title": "⚠️ HIGH: Directory Traversal Attack",
+      "condition": "C",
+      "data": [
+        {
+          "refId": "A",
+          "expression": "{job=\"honeypot\", service=\"http\"} |= \"../\" or \"..\\\\\"",
+          "hide": false
+        },
+        {
+          "refId": "B",
+          "expression": "A",
+          "reducer": {
+            "type": "count"
+          }
+        },
+        {
+          "refId": "C",
+          "expression": "B",
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [3],
+                "type": "gt"
+              }
+            }
+          ]
+        }
+      ],
+      "for": "1m",
+      "annotations": {
+        "description": "Directory traversal attack detected",
+        "summary": "Path traversal detected"
+      },
+      "labels": {
+        "severity": "high",
+        "service": "http",
+        "team": "security"
+      }
+    },
+    {
+      "id": "brute-force-medium",
+      "title": "🟡 MEDIUM: Possible Brute Force / Reconnaissance",
+      "condition": "C",
+      "data": [
+        {
+          "refId": "A",
+          "expression": "{job=\"honeypot\"} |= \"api\" or \"scan\" or \"probe\"",
+          "hide": false
+        },
+        {
+          "refId": "B",
+          "expression": "A",
+          "reducer": {
+            "type": "count"
+          }
+        },
+        {
+          "refId": "C",
+          "expression": "B",
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [10],
+                "type": "gt"
+              }
+            }
+          ]
+        }
+      ],
+      "for": "3m",
+      "annotations": {
+        "description": "Potential reconnaissance/brute force activity",
+        "summary": "Suspicious probing detected"
+      },
+      "labels": {
+        "severity": "medium",
+        "service": "all",
+        "team": "security"
+      }
+    },
+    {
+      "id": "kafka-heartbeat",
+      "title": "🔴 CRITICAL: Kafka Pipeline Down",
+      "condition": "C",
+      "data": [
+        {
+          "refId": "A",
+          "expression": "up{job=\"kafka\"}",
+          "hide": false
+        },
+        {
+          "refId": "B",
+          "expression": "A",
+          "reducer": {
+            "type": "last"
+          }
+        },
+        {
+          "refId": "C",
+          "expression": "B",
+          "type": "threshold",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [0],
+                "type": "lt"
+              }
+            }
+          ]
+        }
+      ],
+      "for": "30s",
+      "annotations": {
+        "description": "Kafka broker is not responding",
+        "summary": "Kafka pipeline failure"
+      },
+      "labels": {
+        "severity": "critical",
+        "service": "kafka",
+        "team": "infrastructure"
+      }
+    }
+  ]
+}

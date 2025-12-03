@@ -252,8 +252,7 @@ class ShopHubController:
             }
 
             log(f"[Controller] Sending to Kafka: {method} {path} -> {status_code}")
-            self.kafka_manager.send(topic="HTTPtoSSH", value=payload)
-            self.kafka_manager.send(topic="HTTPtoDB", value=payload)
+            self.kafka_manager.send(topic="honeypot-logs", value=payload, service="http", event_type=intent)
 
         except Exception as e:
             log(f"[Controller] Kafka send error: {e}")

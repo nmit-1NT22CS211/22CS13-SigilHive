@@ -1,0 +1,28 @@
+{
+  "alerts": [
+    {
+      "title": "\ud83d\udea8 SQL Injection Detected",
+      "condition": "{job=\"honeypot\", service=\"database\"} |= \"UNION\" or \"DROP\" or \"SELECT\"",
+      "severity": "CRITICAL",
+      "for": "1m"
+    },
+    {
+      "title": "\u26a0\ufe0f Directory Traversal Attempt",
+      "condition": "{job=\"honeypot\", service=\"http\"} |= \"../\" or \"..\\\\\"",
+      "severity": "HIGH",
+      "for": "2m"
+    },
+    {
+      "title": "\ud83d\udd13 Admin Access Attempt",
+      "condition": "{job=\"honeypot\", service=\"http\"} |= \"admin\"",
+      "severity": "HIGH",
+      "for": "1m"
+    },
+    {
+      "title": "\ud83d\udd0d Reconnaissance Activity",
+      "condition": "{job=\"honeypot\"} |= \"reconnaissance\" or \"scanning\" or \"probe\"",
+      "severity": "MEDIUM",
+      "for": "5m"
+    }
+  ]
+}

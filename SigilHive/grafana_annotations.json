@@ -1,0 +1,31 @@
+{
+  "annotations": [
+    {
+      "text": "High HTTP Attack Activity Detected",
+      "tags": [
+        "http",
+        "attack",
+        "high-rate"
+      ],
+      "dashboard": "sigilhive"
+    },
+    {
+      "text": "SQL Injection Attempt Blocked",
+      "tags": [
+        "database",
+        "sql-injection",
+        "critical"
+      ],
+      "dashboard": "sigilhive"
+    },
+    {
+      "text": "Directory Traversal Attack Detected",
+      "tags": [
+        "http",
+        "traversal",
+        "security"
+      ],
+      "dashboard": "sigilhive"
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "dashboard": {
+    "title": "SigilHive Honeypot Monitoring",
+    "tags": [
+      "honeypot",
+      "security",
+      "sigilhive"
+    ],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 0,
+    "refresh": "30s",
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "\ud83d\udd34 Attack Events (Loki)",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\"}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "\ud83d\udcca HTTP Attack Activity",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 8,
+          "w": 12,
+          "h": 6
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"http\"}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "\ud83d\uddc4\ufe0f Database Attack Activity",
+        "type": "logs",
+        "gridPos": {
+          "x": 12,
+          "y": 8,
+          "w": 12,
+          "h": 6
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"database\"}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "\ud83d\udd10 SSH Activity",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 14,
+          "w": 24,
+          "h": 6
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"ssh\"}",
+            "refId": "A"
+          }
+        ]
+      }
+    ]
+  }
+}

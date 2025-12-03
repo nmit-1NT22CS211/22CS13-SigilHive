@@ -75,20 +75,27 @@ class HoneypotKafkaManager:
                     f"✅ [Kafka] Delivered message #{self.message_count} to {msg.topic()}"
                 )
 
-    def send(self, topic: str, value: dict):
-        """Send message to Kafka topic"""
+    def send(self, topic: str, value: Any, service: str = "unknown", event_type: str = "log"):
+        """Send message to Kafka topic with service and event_type."""
         if not self.enabled or self.producer is None:
             return  # Silently skip if Kafka not available
 
-        try:
-            # Convert dict to JSON string if needed
-            if isinstance(value, dict):
-                value_bytes = json.dumps(value).encode("utf-8")
-            elif isinstance(value, str):
-                value_bytes = value.encode("utf-8")
-            else:
-                value_bytes = str(value).encode("utf-8")
+        if isinstance(value, dict):
+            payload = value.copy()
+        elif isinstance(value, str):
+            payload = {"message": value}
+        else:
+            payload = {"message": str(value)}
 
+        payload.update({
+            "service": service,
+            "event_type": event_type,
+            "timestamp": time.time()
+        })
+        
+        value_bytes = json.dumps(payload).encode("utf-8")
+
+        try:
             # Produce message
             self.producer.produce(
                 topic=topic, value=value_bytes, callback=self.delivery_report

@@ -1,0 +1,265 @@
+{
+  "dashboard": {
+    "title": "SigilHive Security Operations Center",
+    "description": "Comprehensive honeypot monitoring dashboard with all attack metrics and visualizations",
+    "tags": [
+      "honeypot",
+      "security",
+      "sigilhive",
+      "soc",
+      "monitoring"
+    ],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "time": {
+      "from": "now-24h",
+      "to": "now"
+    },
+    "uid": "sigilhive-soc",
+    "panels": [
+      {
+        "id": 1,
+        "title": "🔴 CRITICAL: All Attack Events (Real-time)",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 10
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "hideFrom": {
+                "tooltip": false,
+                "viz": false,
+                "legend": false
+              }
+            }
+          }
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "wrapLogMessage": true,
+          "prettifyLogMessage": false,
+          "enableLogDetails": true,
+          "dedupStrategy": "none"
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\"}",
+            "refId": "A",
+            "legendFormat": "{{ service }} - {{ event_type }}"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "📊 HTTP Attack Activity",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 10,
+          "w": 12,
+          "h": 8
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "wrapLogMessage": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"http\"}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "🗄️ Database Attack Activity",
+        "type": "logs",
+        "gridPos": {
+          "x": 12,
+          "y": 10,
+          "w": 12,
+          "h": 8
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "wrapLogMessage": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"database\"}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "🔐 SSH Session Activity",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "wrapLogMessage": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"ssh\"}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "⚠️ High-Severity Threats",
+        "type": "logs",
+        "gridPos": {
+          "x": 12,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "wrapLogMessage": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\"} |= \"admin\" or \"UNION\" or \"DROP\" or \"traverse\"",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "🎯 SQL Injection Attempts",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 26,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"database\"} |= \"UNION\" or \"SELECT\" or \"DROP\"",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "🔓 Admin Access Attempts",
+        "type": "logs",
+        "gridPos": {
+          "x": 12,
+          "y": 26,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"http\"} |= \"admin\"",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "🔍 Directory Traversal Attacks",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 32,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"http\"} |= \"../\" or \"..\\\\\"",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "📡 API Endpoint Scans",
+        "type": "logs",
+        "gridPos": {
+          "x": 12,
+          "y": 32,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "enableLogDetails": true
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\", service=\"http\"} |= \"api\"",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "title": "📋 System Logs & Events",
+        "type": "logs",
+        "gridPos": {
+          "x": 0,
+          "y": 38,
+          "w": 24,
+          "h": 8
+        },
+        "options": {
+          "showLabels": "auto",
+          "showTime": true,
+          "wrapLogMessage": true,
+          "enableLogDetails": true,
+          "dedupStrategy": "none"
+        },
+        "targets": [
+          {
+            "expr": "{job=\"honeypot\"}",
+            "refId": "A"
+          }
+        ]
+      }
+    ]
+  }
+}

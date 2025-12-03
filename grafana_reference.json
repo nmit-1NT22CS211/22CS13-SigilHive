@@ -1,0 +1,281 @@
+{
+  "grafana_monitoring_reference": {
+    "version": "1.0",
+    "created": "2024-12-03",
+    "service": "SigilHive Honeypot Monitoring",
+    
+    "data_sources": {
+      "prometheus": {
+        "type": "Prometheus",
+        "url": "https://prometheus-prod-43-prod-ap-south-1.grafana.net/api/prom",
+        "auth": "basic",
+        "credentials": "instance_number:api_token"
+      },
+      "loki": {
+        "type": "Loki",
+        "url": "https://logs-prod-028.grafana.net",
+        "auth": "basic",
+        "credentials": "instance_number:api_token"
+      }
+    },
+    
+    "metrics": {
+      "attack_counters": [
+        "sigilhive_ssh_attacks",
+        "sigilhive_http_attacks",
+        "sigilhive_database_attacks"
+      ],
+      "threat_detection": [
+        "sigilhive_sql_injection_attempts",
+        "sigilhive_privilege_escalation_attempts",
+        "sigilhive_reconnaissance_activities",
+        "sigilhive_suspicious_commands"
+      ],
+      "session_tracking": [
+        "sigilhive_total_sessions",
+        "sigilhive_active_sessions"
+      ]
+    },
+    
+    "loki_labels": {
+      "honeypot_events": {
+        "job": "honeypot",
+        "service": ["ssh", "http", "database"],
+        "event_type": [
+          "read_file", "write", "auth", "suspicious", 
+          "privilege_escalation", "reconnaissance", "policy_violation"
+        ]
+      },
+      "honeypot_alerts": {
+        "job": "honeypot-alerts",
+        "severity": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+        "service": ["ssh", "http", "database", "all"]
+      }
+    },
+    
+    "alert_rules": [
+      {
+        "id": "sql_injection_high",
+        "name": "High SQL Injection Attempts",
+        "description": "Detects spike in SQL injection attempts",
+        "severity": "CRITICAL",
+        "expr": "sigilhive_sql_injection_attempts > 10",
+        "duration": "5m",
+        "annotations": {
+          "summary": "SQL Injection spike detected",
+          "description": "{{ $value }} SQL injection attempts detected"
+        }
+      },
+      {
+        "id": "privilege_escalation",
+        "name": "Privilege Escalation Attempt",
+        "description": "Detects any privilege escalation attempts",
+        "severity": "CRITICAL",
+        "expr": "sigilhive_privilege_escalation_attempts > 0",
+        "duration": "1m",
+        "annotations": {
+          "summary": "Privilege escalation detected",
+          "description": "Sudo or chmod-based escalation attempt"
+        }
+      },
+      {
+        "id": "suspicious_commands",
+        "name": "High Suspicious Command Rate",
+        "description": "Detects unusual command patterns",
+        "severity": "HIGH",
+        "expr": "sigilhive_suspicious_commands > 20",
+        "duration": "5m",
+        "annotations": {
+          "summary": "Suspicious commands detected",
+          "description": "{{ $value }} suspicious commands in past 5 minutes"
+        }
+      },
+      {
+        "id": "http_attack_rate",
+        "name": "High HTTP Attack Rate",
+        "description": "Detects HTTP attack rate spike",
+        "severity": "HIGH",
+        "expr": "rate(sigilhive_http_attacks[5m]) > 10",
+        "duration": "2m",
+        "annotations": {
+          "summary": "HTTP attack rate spike",
+          "description": "{{ $value }} HTTP attacks per second"
+        }
+      },
+      {
+        "id": "reconnaissance",
+        "name": "Reconnaissance Activity",
+        "description": "Detects probing and scanning activities",
+        "severity": "MEDIUM",
+        "expr": "sigilhive_reconnaissance_activities > 15",
+        "duration": "3m",
+        "annotations": {
+          "summary": "Reconnaissance activity detected",
+          "description": "{{ $value }} probing/scanning activities"
+        }
+      }
+    ],
+    
+    "dashboard_panels": [
+      {
+        "id": 1,
+        "title": "Attack Activity (24h)",
+        "type": "timeseries",
+        "targets": [
+          {"metric": "sigilhive_ssh_attacks", "legend": "SSH"},
+          {"metric": "sigilhive_http_attacks", "legend": "HTTP"},
+          {"metric": "sigilhive_database_attacks", "legend": "Database"}
+        ],
+        "position": {"x": 0, "y": 0, "h": 8, "w": 12}
+      },
+      {
+        "id": 2,
+        "title": "Threat Distribution",
+        "type": "piechart",
+        "targets": [
+          {"metric": "sigilhive_ssh_attacks", "legend": "SSH"},
+          {"metric": "sigilhive_http_attacks", "legend": "HTTP"},
+          {"metric": "sigilhive_database_attacks", "legend": "Database"}
+        ],
+        "position": {"x": 12, "y": 0, "h": 8, "w": 12}
+      },
+      {
+        "id": 3,
+        "title": "SQL Injection Attempts",
+        "type": "stat",
+        "targets": [{"metric": "sigilhive_sql_injection_attempts"}],
+        "position": {"x": 0, "y": 8, "h": 4, "w": 6}
+      },
+      {
+        "id": 4,
+        "title": "Privilege Escalation",
+        "type": "stat",
+        "targets": [{"metric": "sigilhive_privilege_escalation_attempts"}],
+        "position": {"x": 6, "y": 8, "h": 4, "w": 6}
+      },
+      {
+        "id": 5,
+        "title": "Active Sessions",
+        "type": "stat",
+        "targets": [{"metric": "sigilhive_total_sessions"}],
+        "position": {"x": 12, "y": 8, "h": 4, "w": 6}
+      },
+      {
+        "id": 6,
+        "title": "Suspicious Commands",
+        "type": "stat",
+        "targets": [{"metric": "sigilhive_suspicious_commands"}],
+        "position": {"x": 18, "y": 8, "h": 4, "w": 6}
+      },
+      {
+        "id": 7,
+        "title": "Security Alerts",
+        "type": "logs",
+        "targets": [{"query": "{job=\"honeypot-alerts\"}"}],
+        "position": {"x": 0, "y": 12, "h": 8, "w": 24}
+      },
+      {
+        "id": 8,
+        "title": "Reconnaissance Activities",
+        "type": "stat",
+        "targets": [{"metric": "sigilhive_reconnaissance_activities"}],
+        "position": {"x": 0, "y": 20, "h": 4, "w": 6}
+      },
+      {
+        "id": 9,
+        "title": "Attack Rate (per minute)",
+        "type": "timeseries",
+        "targets": [{
+          "expr": "rate(sigilhive_ssh_attacks[1m]) + rate(sigilhive_http_attacks[1m]) + rate(sigilhive_database_attacks[1m])",
+          "legend": "Total Attack Rate"
+        }],
+        "position": {"x": 6, "y": 20, "h": 8, "w": 18}
+      }
+    ],
+    
+    "event_classification": {
+      "services": {
+        "ssh": {
+          "port": 5555,
+          "events": [
+            "read_file", "write", "privilege_escalation",
+            "reconnaissance", "authentication", "directory_listing"
+          ]
+        },
+        "http": {
+          "port": "8080/8443",
+          "events": [
+            "home", "product_page", "shopping", "auth",
+            "admin", "api", "static", "suspicious"
+          ]
+        },
+        "database": {
+          "port": 3306,
+          "events": [
+            "read", "write", "create_db", "drop_db",
+            "create_table", "drop_table", "use_db"
+          ]
+        }
+      },
+      "threat_levels": {
+        "CRITICAL": ["privilege_escalation", "sql_injection", "auth_bypass"],
+        "HIGH": ["authentication_failure", "directory_traversal", "command_injection"],
+        "MEDIUM": ["suspicious", "reconnaissance", "policy_violation"],
+        "LOW": ["info", "debug", "success"]
+      }
+    },
+    
+    "query_examples": {
+      "prometheus": {
+        "all_attacks": "sigilhive_ssh_attacks + sigilhive_http_attacks + sigilhive_database_attacks",
+        "ssh_rate": "rate(sigilhive_ssh_attacks[5m])",
+        "http_rate": "rate(sigilhive_http_attacks[5m])",
+        "sql_injection": "sigilhive_sql_injection_attempts",
+        "active_sessions": "sigilhive_total_sessions"
+      },
+      "loki": {
+        "all_events": "{job=\"honeypot\"}",
+        "critical_alerts": "{job=\"honeypot-alerts\", severity=\"CRITICAL\"}",
+        "by_service": "{job=\"honeypot\", service=\"ssh\"}",
+        "sql_attacks": "{job=\"honeypot\"} |= \"sql\"",
+        "privilege_escalation": "{job=\"honeypot\"} |= \"sudo\" or \"chmod\""
+      }
+    },
+    
+    "setup_checklist": [
+      "✓ Sign up for Grafana Cloud",
+      "✓ Create stack",
+      "✓ Get API token",
+      "✓ Update .env with credentials",
+      "✓ Start docker-compose",
+      "✓ Add Prometheus data source",
+      "✓ Add Loki data source",
+      "✓ Create dashboard",
+      "✓ Configure alert notifications",
+      "✓ Test with sample events",
+      "✓ Verify metrics appearing",
+      "✓ Verify alerts firing",
+      "✓ Document baselines"
+    ],
+    
+    "troubleshooting": {
+      "no_logs": [
+        "Check LOKI_URL in .env",
+        "Verify LOKI_USERNAME and LOKI_PASSWORD",
+        "Test network connectivity: docker exec grafana_connector ping google.com",
+        "Check logs: docker logs grafana_connector"
+      ],
+      "no_metrics": [
+        "Check PROMETHEUS_PUSHGATEWAY setting",
+        "Verify Pushgateway is accessible",
+        "Check metrics_collector logs: docker logs metrics_collector",
+        "Ensure API token has write permissions"
+      ],
+      "alerts_not_firing": [
+        "Verify alert rules in Grafana",
+        "Check Loki has data: query {job=\"honeypot-alerts\"}",
+        "Verify alert evaluation: check Grafana logs"
+      ]
+    }
+  }
+}

@@ -261,7 +261,7 @@
     "troubleshooting": {
       "no_logs": [
         "Check LOKI_URL in .env",
-        "Verify LOKI_USERNAME and LOKI_PASSWORD",
+        "Verify LOKI_USERNAME and GRAFANA_DOCKER_API",
         "Test network connectivity: docker exec grafana_connector ping google.com",
         "Check logs: docker logs grafana_connector"
       ],

@@ -23,11 +23,10 @@ load_dotenv()
 # Configuration
 LOKI_URL = os.environ.get("LOKI_URL")
 LOKI_USERNAME = os.environ.get("LOKI_USERNAME")
-LOKI_PASSWORD = os.environ.get("LOKI_PASSWORD")
+GRAFANA_DOCKER_API = os.environ.get("GRAFANA_DOCKER_API")
 PROMETHEUS_PUSHGATEWAY = os.environ.get("PROMETHEUS_PUSHGATEWAY", "http://localhost:9091")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL")  # For remote-write
 PROMETHEUS_USERNAME = os.environ.get("PROMETHEUS_USERNAME")
-PROMETHEUS_PASSWORD = os.environ.get("PROMETHEUS_PASSWORD")
 KAFKA_BROKER = os.environ.get("KAFKA_BROKER", "kafka:9092")
 KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "honeypot-logs")
 
@@ -191,7 +190,7 @@ class MetricsCollector:
             response = requests.post(
                 PROMETHEUS_URL,
                 data=payload,
-                auth=(PROMETHEUS_USERNAME, PROMETHEUS_PASSWORD) if PROMETHEUS_USERNAME else None,
+                auth=(PROMETHEUS_USERNAME, GRAFANA_DOCKER_API) if PROMETHEUS_USERNAME else None,
                 headers=headers
             )
             response.raise_for_status()
@@ -228,7 +227,7 @@ class MetricsCollector:
             response = requests.post(
                 LOKI_URL,
                 json=payload,
-                auth=(LOKI_USERNAME, LOKI_PASSWORD) if LOKI_USERNAME else None,
+                auth=(LOKI_USERNAME, GRAFANA_DOCKER_API) if LOKI_USERNAME else None,
                 headers={"Content-Type": "application/json"}
             )
             response.raise_for_status()

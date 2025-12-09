@@ -16,7 +16,7 @@ load_dotenv()
 # Grafana Loki configuration
 LOKI_URL = os.environ.get("LOKI_URL")
 LOKI_USERNAME = os.environ.get("LOKI_USERNAME")
-LOKI_PASSWORD = os.environ.get("LOKI_PASSWORD")
+GRAFANA_DOCKER_API = os.environ.get("GRAFANA_DOCKER_API")
 
 # Kafka configuration
 KAFKA_BROKER = os.environ.get("KAFKA_BROKER", "kafka:9092")
@@ -56,7 +56,7 @@ def push_to_loki(log_entry):
     try:
         response = requests.post(
             LOKI_URL,
-            auth=(LOKI_USERNAME, LOKI_PASSWORD) if LOKI_USERNAME else None,
+            auth=(LOKI_USERNAME, GRAFANA_DOCKER_API) if LOKI_USERNAME else None,
             json=payload,
             headers=headers,
         )

@@ -739,7 +739,14 @@ class ShopHubDBController:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            self.kafka_manager.send(topic="honeypot-logs", value=payload, service="database", event_type=intent)
+            self.kafka_manager.send(topic="DBtoHTTP", value=payload)
+            self.kafka_manager.send(topic="DBtoSSH", value=payload)
+            self.kafka_manager.send_dashboard(
+                topic="honeypot-logs",
+                value=payload,
+                service="database",
+                event_type=intent,
+            )
 
         except Exception as e:
             print(f"[DBController] Kafka send error: {e}")

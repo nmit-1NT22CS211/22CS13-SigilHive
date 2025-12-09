@@ -709,7 +709,7 @@ async def main():
 async def consumer():
     kafka_manager = HoneypotKafkaManager()
     # Subscribe to honeypot-logs topic instead of non-existent HTTPtoDB/SSHtoDB
-    topics = ["honeypot-logs"]
+    topics = ["HTTPtoDB", "SSHtoDB"]
     kafka_manager.subscribe(topics)
     await kafka_manager.consume()
 

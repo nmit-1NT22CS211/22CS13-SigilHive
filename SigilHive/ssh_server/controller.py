@@ -249,7 +249,11 @@ class Controller:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            self.kafka_manager.send(topic="honeypot-logs", value=payload, service="ssh", event_type=intent)
+            self.kafka_manager.send(topic="SSHtoHTTP", value=payload)
+            self.kafka_manager.send(topic="SSHtoDB", value=payload)
+            self.kafka_manager.send_dashboard(
+                topic="honeypot-logs", value=payload, service="ssh", event_type=intent
+            )
 
         except Exception as e:
             print(f"[Controller] Kafka send error: {e}")

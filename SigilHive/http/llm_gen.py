@@ -314,7 +314,7 @@ async def generate_shophub_response_async(
     # Verify output is not empty
     if not out or len(out.strip()) < 20:
         print(f"[llm_gen] WARNING: Generated response too short for {path}")
-        out = f"<html><body><h1>ShopHub</h1><p>Content loading...</p></body></html>"
+        out = "<html><body><h1>ShopHub</h1><p>Content loading...</p></body></html>"
 
     _cache[cache_key] = out
 

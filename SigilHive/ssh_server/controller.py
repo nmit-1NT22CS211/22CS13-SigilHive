@@ -1,75 +1,21 @@
-# controller.py - FIXED VERSION
-import llm_gen
-import asyncio
 import numpy as np
 import time
 import random
-import json
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
-from adaptive_response import AdaptiveResponseSystem
-from smart_prompt_generator import SmartPromptGenerator
-from dynamic_filesystem import DynamicFileSystem
-from smart_cache import SmartCache
-from enhanced_analytics import EnhancedAnalytics, CommandEvent
+from llm_gen import generate_response_for_command_async
 from kafka_manager import HoneypotKafkaManager
 from file_structure import SHOPHUB_STRUCTURE, FILE_CONTENTS
-
-ENHANCEMENTS_ENABLED = True
 
 
 class Controller:
     def __init__(self, persona: str = "shophub-server"):
         self.sessions: Dict[str, Dict[str, Any]] = {}
         self.persona = persona
-        self.background_tasks = []  # Track background tasks
         self.kafka_manager = HoneypotKafkaManager()
-
-        # ensure we modify the module-level flag if needed
-        global ENHANCEMENTS_ENABLED
-
-        # Initialize enhancement systems (with fallback)
-        if ENHANCEMENTS_ENABLED:
-            try:
-                self.adaptive_system = AdaptiveResponseSystem()
-                self.prompt_generator = SmartPromptGenerator()
-                self.dynamic_fs = DynamicFileSystem(SHOPHUB_STRUCTURE)
-                self.cache = SmartCache(max_memory_cache_size=100)
-                self.analytics = EnhancedAnalytics()
-
-                # DON'T start background tasks here - they'll be started later
-                print("[Controller] ✅ All enhancements loaded successfully")
-            except Exception as e:
-                print(f"[Controller] ⚠️  Enhancement initialization error: {e}")
-                ENHANCEMENTS_ENABLED = False
-
-        if not ENHANCEMENTS_ENABLED:
-            print("[Controller] Running in BASIC mode (no enhancements)")
-
-    async def start_background_tasks(self):
-        """Start background tasks - call this after event loop is running"""
-        if not ENHANCEMENTS_ENABLED:
-            return
-
-        try:
-            # Create and store background tasks
-            cache_task = asyncio.create_task(self._background_cache_cleanup())
-            fs_task = asyncio.create_task(self._background_fs_evolution())
-
-            self.background_tasks.extend([cache_task, fs_task])
-            print("[Controller] 🔄 Background tasks started")
-        except Exception as e:
-            print(f"[Controller] ⚠️  Could not start background tasks: {e}")
-
-    async def stop_background_tasks(self):
-        """Stop all background tasks gracefully"""
-        for task in self.background_tasks:
-            if not task.done():
-                task.cancel()
-
-        # Wait for all tasks to complete
-        await asyncio.gather(*self.background_tasks, return_exceptions=True)
-        print("[Controller] 🛑 Background tasks stopped")
+        self.file_structure = SHOPHUB_STRUCTURE
+        self.file_contents = FILE_CONTENTS
+        print("[Controller] ✅ Controller initialized")
 
     def _update_meta(self, session_id: str, event: Dict[str, Any]):
         meta = self.sessions.setdefault(
@@ -80,7 +26,6 @@ class Controller:
                 "last_cmd": "",
                 "current_dir": "~",
                 "command_history": [],
-                "discovered_files": [],
             },
         )
         meta["cmd_count"] = event.get("cmd_count", meta["cmd_count"])
@@ -91,7 +36,6 @@ class Controller:
             meta["last_cmd"] = cmd
             meta["command_history"].append(cmd)
 
-            # Keep last 50 commands
             if len(meta["command_history"]) > 50:
                 meta["command_history"] = meta["command_history"][-50:]
 
@@ -103,7 +47,7 @@ class Controller:
         return meta
 
     def get_directory_context(self, current_dir: str) -> Dict[str, Any]:
-        """Get context about the current directory for the LLM"""
+        """Get context about the current directory"""
         normalized_dir = current_dir.strip()
 
         if normalized_dir.endswith("/") and normalized_dir != "/":
@@ -111,15 +55,16 @@ class Controller:
 
         if normalized_dir == "~" or normalized_dir == "":
             normalized_dir = "~"
-        if normalized_dir in SHOPHUB_STRUCTURE:
-            return SHOPHUB_STRUCTURE[normalized_dir]
+
+        if normalized_dir in self.file_structure:
+            return self.file_structure[normalized_dir]
 
         if not normalized_dir.startswith("~") and normalized_dir.startswith("/"):
             pass
         elif not normalized_dir.startswith("~"):
             maybe = f"~/{normalized_dir}"
-            if maybe in SHOPHUB_STRUCTURE:
-                return SHOPHUB_STRUCTURE[maybe]
+            if maybe in self.file_structure:
+                return self.file_structure[maybe]
 
         return {
             "type": "directory",
@@ -135,7 +80,6 @@ class Controller:
         cmd_parts = cmd.split()
         base_cmd = cmd_parts[0] if cmd_parts else ""
 
-        # Terminal control commands
         if base_cmd in ("clear", "reset"):
             return "clear_screen"
         if base_cmd == "history":
@@ -144,10 +88,7 @@ class Controller:
             return "echo"
         if base_cmd == "env" or base_cmd == "printenv":
             return "show_env"
-
-        # Commands that require arguments
         if base_cmd in ("cat", "less", "more"):
-            # Check if filename is provided
             if len(cmd_parts) < 2:
                 return "read_file_no_arg"
             return "read_file"
@@ -170,7 +111,6 @@ class Controller:
         if base_cmd in ("find", "locate"):
             return "search"
         if base_cmd in ("grep", "egrep"):
-            # Check if pattern is provided
             if len(cmd_parts) < 2:
                 return "grep_no_arg"
             return "grep"
@@ -219,11 +159,11 @@ class Controller:
 
         full_path = full_path.replace("//", "/")
 
-        if full_path in FILE_CONTENTS:
+        if full_path in self.file_contents:
             return full_path
 
         full_path_lower = full_path.lower()
-        for key in FILE_CONTENTS.keys():
+        for key in self.file_contents.keys():
             if key.lower() == full_path_lower:
                 return key
 
@@ -252,7 +192,10 @@ class Controller:
             self.kafka_manager.send(topic="SSHtoHTTP", value=payload)
             self.kafka_manager.send(topic="SSHtoDB", value=payload)
             self.kafka_manager.send_dashboard(
-                topic="honeypot-logs", value=payload, service="ssh", event_type=intent
+                topic="honeypot-logs",
+                value=payload,
+                service="ssh",
+                event_type=intent,
             )
 
         except Exception as e:
@@ -269,48 +212,7 @@ class Controller:
         command_history = meta.get("command_history", [])
         intent = self.classify_command(cmd)
 
-        # --- Filesystem evolution ---
-        if ENHANCEMENTS_ENABLED:
-            try:
-                self.dynamic_fs.evolve_filesystem(session_id, command_history)
-                dir_context = self.dynamic_fs.get_structure().get(
-                    current_dir, self.get_directory_context(current_dir)
-                )
-            except Exception:
-                dir_context = self.get_directory_context(current_dir)
-        else:
-            dir_context = self.get_directory_context(current_dir)
-
-        # --- Cache lookup ---
-        cache_key = f"{session_id}:{cmd}:{current_dir}"
-        if ENHANCEMENTS_ENABLED:
-            try:
-                cached = await self.cache.get(cache_key)
-                if cached:
-                    attacker_profile = self.adaptive_system.get_attacker_profile(
-                        session_id
-                    )
-                    if not attacker_profile:
-                        attacker_profile = (
-                            self.adaptive_system.analyze_attacker_behavior(
-                                session_id, command_history
-                            )
-                        )
-
-                    adaptive = self.adaptive_system.get_adaptive_response(
-                        session_id, cmd, cached, command_history
-                    )
-
-                    return await self._finalize(
-                        session_id,
-                        cmd,
-                        intent,
-                        current_dir,
-                        adaptive["response"],
-                        adaptive["delay"],
-                    )
-            except Exception:
-                pass
+        dir_context = self.get_directory_context(current_dir)
 
         # --- print_dir ---
         if intent == "print_dir":
@@ -376,29 +278,15 @@ class Controller:
             if file_parts:
                 filename_hint = file_parts[0]
 
-                # dynamic FS
-                if ENHANCEMENTS_ENABLED:
-                    try:
-                        fpath = f"{current_dir}/{filename_hint}"
-                        dyn = self.dynamic_fs.get_file_content(fpath)
-                        if dyn:
-                            return await self._finalize(
-                                session_id, cmd, intent, current_dir, dyn, 0.05
-                            )
-                    except Exception:
-                        pass
-
-                # predefined FS
                 matched_path = self._find_file_case_insensitive(
                     current_dir, filename_hint
                 )
                 if matched_path:
-                    content = FILE_CONTENTS[matched_path]
+                    content = self.file_contents[matched_path]
                     return await self._finalize(
                         session_id, cmd, intent, current_dir, content, 0.05
                     )
 
-                # file not found
                 msg = f"cat: {filename_hint}: No such file or directory"
                 return await self._finalize(
                     session_id, cmd, intent, current_dir, msg, 0.02
@@ -490,27 +378,8 @@ class Controller:
             "application_tech": "Node.js, Express, MongoDB, Redis, Docker",
         }
 
-        if ENHANCEMENTS_ENABLED:
-            try:
-                attacker_profile = self.adaptive_system.analyze_attacker_behavior(
-                    session_id, command_history
-                )
-                discovered_files = meta.get("discovered_files", [])
-                context["enhanced_prompt"] = (
-                    self.prompt_generator.build_contextual_prompt(
-                        session_id=session_id,
-                        command=cmd,
-                        current_dir=current_dir,
-                        intent=intent,
-                        attacker_profile=attacker_profile,
-                        discovered_files=discovered_files,
-                    )
-                )
-            except Exception:
-                pass
-
         try:
-            response_text = await llm_gen.generate_response_for_command_async(
+            response_text = await generate_response_for_command_async(
                 command=cmd,
                 filename_hint=filename_hint,
                 persona=self.persona,
@@ -521,111 +390,14 @@ class Controller:
                 f"bash: {cmd.split()[0] if cmd else 'unknown'}: command not found"
             )
 
-        # Adaptive + Cache
-        if ENHANCEMENTS_ENABLED:
-            try:
-                await self.cache.set(cache_key, response_text)
-                adaptive = self.adaptive_system.get_adaptive_response(
-                    session_id, cmd, response_text, command_history
-                )
-                return await self._finalize(
-                    session_id,
-                    cmd,
-                    intent,
-                    current_dir,
-                    adaptive["response"],
-                    adaptive["delay"],
-                )
-            except Exception:
-                pass
-
-        # final fallback
         delay = 0.05 + float(np.random.rand()) * 0.2
         return await self._finalize(
             session_id, cmd, intent, current_dir, response_text, delay
         )
 
-    def _log_to_analytics(
-        self,
-        session_id: str,
-        command: str,
-        intent: str,
-        current_dir: str,
-        response: str,
-        delay: float,
-        success: bool,
-    ):
-        """Log command to analytics system"""
-        if not ENHANCEMENTS_ENABLED:
-            return
-
-        try:
-            event = CommandEvent(
-                session_id=session_id,
-                timestamp=datetime.now(),
-                command=command,
-                intent=intent,
-                current_dir=current_dir,
-                response_preview=response[:400],
-                delay=delay,
-                success=success,
-            )
-            self.analytics.log_command(event)
-        except Exception as e:
-            print(f"[Controller] Analytics logging error: {e}")
-
-    async def _background_cache_cleanup(self):
-        """Background task to clean up expired cache entries"""
-        while True:
-            try:
-                await asyncio.sleep(300)  # Every 5 minutes
-                self.cache.cleanup_expired()
-                stats = self.cache.get_stats()
-                print(f"[Controller] 🧹 Cache cleanup: {stats['hit_rate']} hit rate")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"[Controller] Cache cleanup error: {e}")
-
-    async def _background_fs_evolution(self):
-        """Background task to evolve filesystem"""
-        while True:
-            try:
-                await asyncio.sleep(600)  # Every 10 minutes
-
-                for session_id, meta in self.sessions.items():
-                    commands = meta.get("command_history", [])
-                    if commands:
-                        self.dynamic_fs.evolve_filesystem(session_id, commands)
-
-                print("[Controller] 🌱 Filesystem evolved")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"[Controller] Filesystem evolution error: {e}")
-
-    def get_analytics_report(self, hours: int = 24) -> Dict[str, Any]:
-        """Get analytics report"""
-        if ENHANCEMENTS_ENABLED:
-            return self.analytics.generate_report(hours)
-        return {}
-
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache statistics"""
-        if ENHANCEMENTS_ENABLED:
-            return self.cache.get_stats()
-        return {}
-
     def end_session(self, session_id: str):
-        """End a session and finalize analytics"""
+        """End a session"""
         if session_id in self.sessions:
-            if ENHANCEMENTS_ENABLED:
-                try:
-                    profile = self.adaptive_system.get_attacker_profile(session_id)
-                    self.analytics.end_session(session_id, profile)
-                except Exception:
-                    pass
-
             del self.sessions[session_id]
 
     # Simulation helper methods

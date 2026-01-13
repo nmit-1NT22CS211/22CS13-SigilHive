@@ -1,4 +1,3 @@
-# llm_gen.py
 import os
 import json
 import hashlib
@@ -15,7 +14,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_KEY:
     print("[llm_gen] WARNING: GEMINI_API_KEY not set. Set it in .env or env vars.")
 
-CACHE_PATH = "llm_cache.json"
+CACHE_PATH = "ssh_llm_cache.json"
 _cache = {}
 
 try:
@@ -44,7 +43,7 @@ _BANNED_SUBSTRS = [
     "rm -rf",
     "dd if=",
     "mkfs",
-    ":(){:|:&};:",  # fork bomb
+    ":(){:|:&};:",
     "curl http://malicious",
     "wget http://malicious",
     "nc -e",
@@ -72,38 +71,30 @@ def sanitize(text: str) -> str:
     out = text
 
     # Remove markdown code fences
-    # Remove opening code fences like ```json, ```javascript, ```html, etc.
     out = re.sub(r"```[a-zA-Z]*\n?", "", out)
-    # Remove closing code fences
     out = re.sub(r"\n?```", "", out)
-
-    # Remove markdown headers at the start of lines
     out = re.sub(r"^#+\s+", "", out, flags=re.MULTILINE)
-
-    # Remove any remaining triple backticks
     out = out.replace("```", "")
 
     for b in _BANNED_SUBSTRS:
         out = out.replace(b, "[REDACTED]")
+
     if len(out) > 8000:
         out = out[:8000] + "\n...[truncated]"
+
     return out.strip()
 
 
 def _build_prompt(
     command: str, filename_hint: str = None, persona: str = None, context: dict = None
 ) -> str:
-    """
-    Build a context-aware prompt that helps the LLM generate realistic outputs
-    based on the current directory and application structure.
-    """
+    """Build a context-aware prompt for LLM"""
     persona_line = (
         f"You are simulating terminal output for a {persona} system."
         if persona
         else "You are simulating terminal output for a Linux server."
     )
 
-    # Build context information
     context_info = ""
     if context:
         current_dir = context.get("current_directory", "~")
@@ -181,8 +172,8 @@ def _call_gemini_sync(prompt: str) -> str:
         text = resp.content if hasattr(resp, "content") else str(resp)
     except Exception as e:
         print(f"[llm_gen] Gemini API error: {e}")
-        # Return a generic simulated response instead of error
         text = "# File content simulation\n# (LLM unavailable - showing placeholder)\nconst placeholder = true;"
+
     return sanitize(text)
 
 
@@ -197,7 +188,6 @@ async def generate_response_for_command_async(
     Async wrapper that generates context-aware responses.
     Uses cache keyed by command + directory context.
     """
-    # Create cache key that includes directory context
     current_dir = context.get("current_directory", "~") if context else "~"
     key_raw = f"cmd:{command}|dir:{current_dir}|file:{filename_hint or ''}"
     cache_key = _cache_key("resp", key_raw)

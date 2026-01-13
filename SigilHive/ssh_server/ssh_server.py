@@ -5,7 +5,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from controller import Controller, SHOPHUB_STRUCTURE
+from controller import Controller
 from kafka_manager import HoneypotKafkaManager
 
 # Load environment variables from .env file
@@ -38,27 +38,19 @@ class HoneypotSession(asyncssh.SSHServerSession):
         self._chan = chan
         print(f"[honeypot][{self.session_id}] connection established")
         try:
-            # Send ShopHub banner (ensure string)
             banner = f"""
 ╔═══════════════════════════════════════════════════════════╗
-
 ║         Welcome to ShopHub Production Server              ║
-
 ║                                                           ║
-
 ║  WARNING: Unauthorized access is strictly prohibited      ║
-
 ║  All activities are monitored and logged                  ║
-
 ╚═══════════════════════════════════════════════════════════╝
 
 ShopHub v2.3.1 - E-commerce Platform
 Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
 
 """
-            # Write banner and then prompt. Use str(...) to be robust.
             self._chan.write(str(banner))
-            # tiny newline to reduce chance of prompt-appending artifacts
             self._chan.write("\r\n")
             self._write_prompt()
         except Exception as e:
@@ -68,7 +60,6 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         """Write a realistic shell prompt"""
         if self._chan and not self._closed:
             try:
-                # Color codes for realistic prompt
                 prompt = f"\033[32m{self.username}@{self.hostname}\033[0m:\033[34m{self.current_dir}\033[0m$ "
                 self._chan.write(str(prompt))
             except Exception as e:
@@ -77,10 +68,8 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
     def _normalize_path(self, path: str) -> str:
         """Normalize a path relative to current directory"""
         if path.startswith("/"):
-            # Absolute path - check if it's valid
             if path == "/":
                 return "/"
-            # For simplicity, treat /home/shophub as ~
             if path.startswith("/home/shophub"):
                 return path.replace("/home/shophub", "~")
             return path
@@ -91,7 +80,6 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         elif path == "..":
             return self._get_parent_dir(self.current_dir)
         else:
-            # Relative path
             if self.current_dir == "~":
                 return f"~/{path}"
             elif self.current_dir.endswith("/"):
@@ -104,17 +92,14 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         if path == "~" or path == "/" or path == "/home/shophub":
             return "~"
 
-        # Remove trailing slash
         path = path.rstrip("/")
 
-        # Handle ~/ prefix
         if path.startswith("~/"):
             parts = path[2:].split("/")
             if len(parts) <= 1:
                 return "~"
             return "~/" + "/".join(parts[:-1])
 
-        # Handle absolute paths
         if path.startswith("/"):
             parts = path[1:].split("/")
             if len(parts) <= 1:
@@ -126,11 +111,10 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
     def _directory_exists(self, path: str) -> bool:
         """Check if a directory exists in our structure"""
         normalized = self._normalize_path(path)
-        return normalized in SHOPHUB_STRUCTURE
+        return normalized in controller.file_structure
 
     def data_received(self, data, datatype):
         """Handle incoming data from SSH client"""
-        # asyncssh in text mode will send strings; keep accumulating them
         self._input += data
 
         while "\n" in self._input or "\r" in self._input:
@@ -162,7 +146,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                     pass
                 continue
 
-            # Handle cd command locally for immediate feedback
+            # Handle cd command locally
             if cmd.startswith("cd ") or cmd == "cd":
                 self._handle_cd_command(cmd)
                 continue
@@ -175,24 +159,18 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         parts = cmd.split(maxsplit=1)
 
         if len(parts) == 1 or (len(parts) > 1 and parts[1] == "~"):
-            # cd with no args or cd ~ goes to home
             self.current_dir = "~"
         elif len(parts) > 1 and parts[1] == "..":
-            # cd .. goes up one directory
             self.current_dir = self._get_parent_dir(self.current_dir)
         elif len(parts) > 1 and parts[1] == ".":
-            # cd . stays in current directory
             pass
         elif len(parts) > 1 and parts[1] == "/":
-            # cd / goes to root (but we redirect to home for this app)
             self.current_dir = "~"
         else:
-            # Check if target directory exists
             target_path = self._normalize_path(parts[1])
             if self._directory_exists(target_path):
                 self.current_dir = target_path
             else:
-                # Directory doesn't exist
                 try:
                     self._chan.write(
                         f"bash: cd: {parts[1]}: No such file or directory\n"
@@ -206,17 +184,15 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                         pass
                     return
 
-        # Log directory change
         print(f"[honeypot][{self.session_id}] cd -> {self.current_dir}")
 
-        # Write new prompt
         try:
             self._write_prompt()
         except Exception as e:
             print(f"[honeypot][{self.session_id}] error writing prompt after cd: {e}")
 
     async def handle_command(self, cmd: str):
-        """Handle commands asynchronously - pass everything to controller"""
+        """Handle commands asynchronously"""
         if self._closed or not self._chan:
             return
 
@@ -282,10 +258,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         pass
 
     def pty_requested(self, *args, **kwargs):
-        """
-        Accept any pty_requested signature across asyncssh versions.
-        Try to unpack typical values (term, width, height) for logs.
-        """
+        """Accept any pty_requested signature"""
         try:
             if len(args) >= 1:
                 term = args[0]
@@ -297,9 +270,7 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
                 f"[honeypot][{self.session_id}] pty requested: term={term}, size={width}x{height}"
             )
         except Exception:
-            # be defensive; don't let logging break the session
             print(f"[honeypot][{self.session_id}] pty requested (could not parse args)")
-        # Always accept PTY allocation for the honeypot
         return True
 
     def shell_requested(self):
@@ -313,7 +284,6 @@ Last login: {datetime.now().strftime("%a %b %d %H:%M:%S %Y")} from 10.0.2.15
         duration = time.time() - self.start_time
         print(f"[honeypot][{self.session_id}] connection closed after {duration:.2f}s")
 
-        # End session in controller
         try:
             controller.end_session(self.session_id)
         except Exception as e:
@@ -343,7 +313,6 @@ class HoneypotServer(asyncssh.SSHServer):
         print(
             f"[honeypot][{self.conn_id}] authentication attempt for user '{username}'"
         )
-        # Return True to require authentication
         return True
 
     def password_auth_supported(self):
@@ -362,7 +331,6 @@ class HoneypotServer(asyncssh.SSHServer):
         """Validate password against configured credentials"""
         print(f"[honeypot][{self.conn_id}] login attempt: {username}:{password}")
 
-        # Check if username and password match
         is_valid = username == VALID_USERNAME and password == VALID_PASSWORD
 
         if is_valid:
@@ -383,7 +351,7 @@ class HoneypotServer(asyncssh.SSHServer):
 
 
 def ensure_host_key(path="ssh_host_key"):
-    """Create a RSA host key file if it doesn't exist (helps first-run)."""
+    """Create a RSA host key file if it doesn't exist"""
     if os.path.exists(path):
         return
     try:
@@ -391,14 +359,13 @@ def ensure_host_key(path="ssh_host_key"):
         key = asyncssh.generate_private_key("ssh-rsa")
         with open(path, "wb") as f:
             f.write(key.export_private_key())
-        # write public key too
         pub = key.export_public_key()
         with open(path + ".pub", "wb") as f:
             f.write(pub)
         try:
             os.chmod(path, 0o600)
         except OSError:
-            pass  # Ignore on Windows
+            pass
         print("[honeypot] ssh host key generated")
     except Exception as e:
         print(f"[honeypot] failed to generate host key: {e}")
@@ -411,12 +378,6 @@ async def start_server():
 
     ensure_host_key("ssh_host_key")
 
-    # Start controller background tasks after event loop is ready
-    try:
-        await controller.start_background_tasks()
-    except Exception as e:
-        print(f"[honeypot] warning: background tasks failed to start: {e}")
-
     try:
         await asyncssh.create_server(
             HoneypotServer,
@@ -426,17 +387,10 @@ async def start_server():
         )
         print(f"[honeypot] ✅ listening on {HOST}:{PORT}")
 
-        # Run forever
         await asyncio.Future()
 
     except (OSError, asyncssh.Error) as exc:
         print(f"[honeypot] server failed to start: {exc}")
-    finally:
-        # Clean shutdown
-        try:
-            await controller.stop_background_tasks()
-        except Exception:
-            pass
 
 
 async def consumer():

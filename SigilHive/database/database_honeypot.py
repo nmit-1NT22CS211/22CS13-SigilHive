@@ -613,39 +613,113 @@ class MySQLProtocol(asyncio.Protocol):
 
             print(f"[mysql][{self.session_id}] === RESPONSE DEBUG ===")
             print(f"[mysql][{self.session_id}] Response type: {type(response)}")
+            print(f"[mysql][{self.session_id}] Response content: {str(response)[:200]}")
 
-            # Parse and normalize response
-            if isinstance(response, str):
-                response = response.strip()
-                try:
-                    parsed = json.loads(response)
-                    response = parsed
-                except Exception:
-                    response = {"text": response}
-
-            # If controller returned {"text": "<json>"}, unwrap it
-            if isinstance(response, dict) and "text" in response:
-                text = response["text"]
-                if isinstance(text, str) and text.strip().startswith("{"):
-                    try:
-                        parsed = json.loads(text)
-                        if (
-                            isinstance(parsed, dict)
-                            and "columns" in parsed
-                            and "rows" in parsed
-                        ):
-                            response = parsed
-                    except Exception:
-                        pass
-
-            # Send appropriate response
+            # Normalize response to proper format
+            # Case 1: Already a dict with columns and rows
             if (
                 isinstance(response, dict)
                 and "columns" in response
                 and "rows" in response
             ):
+                print(f"[mysql][{self.session_id}] ✓ Valid table format detected")
                 self.send_text_result(response, sequence_id + 1)
-            elif isinstance(response, str):
+                return
+
+            # Case 2: Dict with "text" field that might contain JSON
+            if isinstance(response, dict) and "text" in response:
+                text = response["text"]
+                print(f"[mysql][{self.session_id}] Found text field: {text[:200]}")
+
+                # Try to parse the text as JSON
+                if isinstance(text, str):
+                    # Remove markdown code blocks
+                    cleaned = text.replace("```json", "").replace("```", "").strip()
+
+                    # Try to parse
+                    try:
+                        parsed = json.loads(cleaned)
+                        if (
+                            isinstance(parsed, dict)
+                            and "columns" in parsed
+                            and "rows" in parsed
+                        ):
+                            print(
+                                f"[mysql][{self.session_id}] ✓ Extracted JSON from text field"
+                            )
+                            self.send_text_result(parsed, sequence_id + 1)
+                            return
+                    except json.JSONDecodeError:
+                        # Try to find JSON in the text
+                        start = cleaned.find("{")
+                        end = cleaned.rfind("}")
+                        if start != -1 and end != -1 and end > start:
+                            try:
+                                parsed = json.loads(cleaned[start : end + 1])
+                                if (
+                                    isinstance(parsed, dict)
+                                    and "columns" in parsed
+                                    and "rows" in parsed
+                                ):
+                                    print(
+                                        f"[mysql][{self.session_id}] ✓ Extracted JSON from substring"
+                                    )
+                                    self.send_text_result(parsed, sequence_id + 1)
+                                    return
+                            except:
+                                pass
+
+                # If we couldn't parse it as JSON, treat as plain text
+                if text.startswith("ERROR"):
+                    self.send_error_packet(1064, "42000", text, sequence_id + 1)
+                elif text.startswith("Query OK") or text == "Database changed":
+                    self.send_ok_packet(sequence_id + 1)
+                else:
+                    self.send_text_result(
+                        {"columns": ["result"], "rows": [[text]]}, sequence_id + 1
+                    )
+                return
+
+            # Case 3: String response
+            if isinstance(response, str):
+                response = response.strip()
+                print(f"[mysql][{self.session_id}] String response: {response[:200]}")
+
+                # Try to parse as JSON first
+                cleaned = response.replace("```json", "").replace("```", "").strip()
+                try:
+                    parsed = json.loads(cleaned)
+                    if (
+                        isinstance(parsed, dict)
+                        and "columns" in parsed
+                        and "rows" in parsed
+                    ):
+                        print(
+                            f"[mysql][{self.session_id}] ✓ Parsed string as JSON table"
+                        )
+                        self.send_text_result(parsed, sequence_id + 1)
+                        return
+                except json.JSONDecodeError:
+                    # Try substring extraction
+                    start = cleaned.find("{")
+                    end = cleaned.rfind("}")
+                    if start != -1 and end != -1 and end > start:
+                        try:
+                            parsed = json.loads(cleaned[start : end + 1])
+                            if (
+                                isinstance(parsed, dict)
+                                and "columns" in parsed
+                                and "rows" in parsed
+                            ):
+                                print(
+                                    f"[mysql][{self.session_id}] ✓ Extracted JSON from string"
+                                )
+                                self.send_text_result(parsed, sequence_id + 1)
+                                return
+                        except:
+                            pass
+
+                # Handle as status message
                 if response.startswith("ERROR"):
                     self.send_error_packet(1064, "42000", response, sequence_id + 1)
                 elif response.startswith("Query OK") or response == "Database changed":
@@ -654,8 +728,11 @@ class MySQLProtocol(asyncio.Protocol):
                     self.send_text_result(
                         {"columns": ["result"], "rows": [[response]]}, sequence_id + 1
                     )
-            else:
-                self.send_ok_packet(sequence_id + 1)
+                return
+
+            # Case 4: Unknown format - send OK
+            print(f"[mysql][{self.session_id}] Unknown response format, sending OK")
+            self.send_ok_packet(sequence_id + 1)
 
         except Exception as e:
             print(f"[mysql][{self.session_id}] query error: {e}")

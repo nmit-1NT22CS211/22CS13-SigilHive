@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from llm_gen import generate_response_for_command_async
 from kafka_manager import HoneypotKafkaManager
 from file_structure import SHOPHUB_STRUCTURE, FILE_CONTENTS
+from rl_core.q_learning_agent import shared_rl_agent
+from rl_core.state_extractor import extract_state
+from rl_core.reward_calculator import calculate_reward
+from logging.structured_logger import log_interaction
 
 
 class Controller:
@@ -15,7 +19,10 @@ class Controller:
         self.kafka_manager = HoneypotKafkaManager()
         self.file_structure = SHOPHUB_STRUCTURE
         self.file_contents = FILE_CONTENTS
-        print("[Controller] ✅ Controller initialized")
+
+        self.rl_agent = shared_rl_agent
+        self.rl_enabled = os.getenv("RL_ENABLED", "true").lower() == "true"
+        print(f"[Controller] ✅ Controller initialized (RL enabled: {self.rl_enabled})")
 
     def _update_meta(self, session_id: str, event: Dict[str, Any]):
         meta = self.sessions.setdefault(
@@ -203,7 +210,7 @@ class Controller:
 
         return {"response": response, "delay": delay}
 
-    async def get_action_for_session(
+    async def _original_command_handler(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
         meta = self._update_meta(session_id, event)
@@ -395,6 +402,46 @@ class Controller:
             session_id, cmd, intent, current_dir, response_text, delay
         )
 
+    async def get_action_for_session(
+        self, session_id: str, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """RL-enhanced command handler - wraps original logic"""
+
+        # Update session metadata first
+        meta = self._update_meta(session_id, event)
+        cmd = meta.get("last_cmd", "")
+        current_dir = meta.get("current_dir", "~")
+
+        # 1. Log interaction for RL
+        log_interaction(
+            session_id=session_id,
+            protocol="ssh",
+            input_data=cmd,
+            metadata={
+                "intent": self.classify_command(cmd),
+                "current_dir": current_dir,
+                "cmd_count": meta.get("cmd_count", 0),
+            },
+        )
+
+        # 2. Extract current state
+        state = extract_state(session_id, protocol="ssh")
+
+        # 3. Select and execute action
+        if self.rl_enabled:
+            rl_action = self.rl_agent.select_action(state)
+            response = await self._execute_rl_action(rl_action, session_id, event)
+        else:
+            response = await self._original_command_handler(session_id, event)
+
+        # 4. Update Q-table
+        if self.rl_enabled:
+            next_state = extract_state(session_id, protocol="ssh")
+            reward = calculate_reward(state, next_state, protocol="ssh")
+            self.rl_agent.update(state, rl_action, reward, next_state)
+
+        return response
+
     def end_session(self, session_id: str):
         """End a session"""
         if session_id in self.sessions:
@@ -481,3 +528,193 @@ class Controller:
                 return "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean"
             return f"git: simulated output for '{cmd}'"
         return "fatal: not a git repository (or any of the parent directories): .git"
+
+    async def _execute_rl_action(
+        self, action: str, session_id: str, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute RL-selected action"""
+        meta = self.sessions[session_id]
+        cmd = meta.get("last_cmd", "")
+        current_dir = meta.get("current_dir", "~")
+        intent = self.classify_command(cmd)
+
+        if action == "REALISTIC_RESPONSE":
+            # Use existing logic
+            return await self._original_command_handler(session_id, event)
+
+        elif action == "DECEPTIVE_RESOURCE":
+            # Return fake sensitive files with honeytokens
+            cmd_lower = cmd.lower()
+
+            # Fake /etc/passwd
+            if "passwd" in cmd_lower and "etc" in cmd_lower:
+                fake_passwd = """root:x:0:0:root:/root:/bin/bash
+    daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+    shophub:x:1000:1000:ShopHub App:/home/shophub:/bin/bash
+    admin:x:1001:1001:Admin User:/home/admin:/bin/bash
+    dbbackup:x:1002:1002:Database Backup:/home/dbbackup:/bin/bash
+    deploy:x:1003:1003:Deployment:/home/deploy:/bin/bash"""
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_passwd, 0.05
+                )
+
+            # Fake /etc/shadow
+            if "shadow" in cmd_lower and "etc" in cmd_lower:
+                fake_shadow = """root:$6$HONEYTOKEN_ROOT_001:19000:0:99999:7:::
+    shophub:$6$HONEYTOKEN_APP_002:19000:0:99999:7:::
+    admin:$6$HONEYTOKEN_ADMIN_003:19000:0:99999:7:::
+    deploy:$6$HONEYTOKEN_DEPLOY_004:19000:0:99999:7:::"""
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_shadow, 0.05
+                )
+
+            # Fake .env file
+            if ".env" in cmd_lower:
+                fake_env = """# ShopHub Production Environment
+    NODE_ENV=production
+    PORT=3000
+
+    # Database
+    DB_HOST=prod-mysql.internal
+    DB_USER=shophub_prod_HONEYTOKEN_001
+    DB_PASS=Pr0dP@ssw0rd_HONEYTOKEN_DB_001
+    DB_NAME=shophub_production
+
+    # Redis
+    REDIS_HOST=prod-redis.internal
+    REDIS_PASS=R3d1sP@ss_HONEYTOKEN_002
+
+    # AWS
+    AWS_ACCESS_KEY_ID=AKIA_HONEYTOKEN_AWS_KEY_001
+    AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG_HONEYTOKEN_AWS_SECRET
+
+    # Stripe
+    STRIPE_SECRET_KEY=sk_live_HONEYTOKEN_STRIPE_SECRET_KEY_001
+
+    # JWT
+    JWT_SECRET=jwt_super_secret_HONEYTOKEN_003"""
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_env, 0.05
+                )
+
+            # Fake SSH private key
+            if "id_rsa" in cmd_lower or ("ssh" in cmd_lower and "key" in cmd_lower):
+                fake_key = """-----BEGIN OPENSSH PRIVATE KEY-----
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn
+    NhAAAAAwEAAQAAAQEA0HONEYTOKEN_SSH_PRIVATE_KEY_DATA_001_FAKE_FOR_TRACKING
+    AAAECAwQAAECAwQAAECAwQAAECAwQAAECAwQAAECAwQAAECAwQ=
+    -----END OPENSSH PRIVATE KEY-----"""
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_key, 0.05
+                )
+
+            # Fake config files
+            if "config" in cmd_lower and any(
+                x in cmd_lower for x in ["db", "database", "mysql"]
+            ):
+                fake_config = """[client]
+    host = prod-mysql.internal
+    user = shophub_admin_HONEYTOKEN
+    password = MyS3cr3t_HONEYTOKEN_005
+    database = shophub_production
+
+    [mysqldump]
+    user = backup_user_HONEYTOKEN
+    password = B@ckup_P@ss_HONEYTOKEN_006"""
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_config, 0.05
+                )
+
+            # Fallback to realistic if no match
+            return await self._original_command_handler(session_id, event)
+
+        elif action == "RESPONSE_DELAY":
+            # Add delay then return realistic response
+            response = await self._original_command_handler(session_id, event)
+            response["delay"] = response.get("delay", 0.0) + random.uniform(0.5, 2.0)
+            return response
+
+        elif action == "MISLEADING_SUCCESS":
+            # Fake successful privilege escalation
+            if intent == "privilege_escalation":
+                # Fake sudo success - return root prompt
+                return await self._finalize(
+                    session_id,
+                    cmd,
+                    intent,
+                    current_dir,
+                    "[sudo] password for shophub:\n# ",
+                    0.1,
+                )
+
+            # Fake successful file operations
+            if intent in ["read_file", "search"]:
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, "", 0.05
+                )
+
+            return await self._finalize(session_id, cmd, intent, current_dir, "", 0.05)
+
+        elif action == "FAKE_VULNERABILITY":
+            # Expose fake vulnerabilities to keep attacker engaged
+            cmd_lower = cmd.lower()
+
+            # Fake find results showing sensitive files
+            if "find" in cmd_lower and any(
+                x in cmd_lower for x in [".key", "key", "secret", "credential"]
+            ):
+                fake_find = """/home/shophub/.ssh/id_rsa
+    /home/shophub/shophub/config/api_keys.json
+    /var/backups/ssl/private.key
+    /opt/secrets/database.key
+    /etc/shophub/stripe_secret.key
+    /home/deploy/.aws/credentials"""
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_find, 0.2
+                )
+
+            # Fake sudo -l showing excessive privileges
+            if "sudo" in cmd_lower and ("-l" in cmd_lower or "list" in cmd_lower):
+                fake_sudo = """Matching Defaults entries for shophub on this host:
+        env_reset, mail_badpass, secure_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    User shophub may run the following commands on shophub-server:
+        (ALL) NOPASSWD: /usr/bin/systemctl restart shophub
+        (ALL) NOPASSWD: /usr/bin/docker-compose
+        (ALL) NOPASSWD: /bin/bash
+        (root) /usr/bin/mysql"""
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_sudo, 0.1
+                )
+
+            # Fake world-writable sensitive files
+            if "ls" in cmd_lower and "-la" in cmd_lower and "etc" in cmd_lower:
+                response = await self._original_command_handler(session_id, event)
+                # Add a suspicious world-writable file to the output
+                if isinstance(response.get("response"), str):
+                    response["response"] += (
+                        "\n-rw-rw-rw-  1 root root  1234 Jan 15 10:00 backup_credentials.txt"
+                    )
+                return response
+
+            # Fake exposed Docker socket
+            if "docker" in cmd_lower or "sock" in cmd_lower:
+                fake_docker = (
+                    """srw-rw-rw- 1 root docker 0 Jan 15 09:30 /var/run/docker.sock"""
+                )
+                return await self._finalize(
+                    session_id, cmd, intent, current_dir, fake_docker, 0.1
+                )
+
+            return await self._original_command_handler(session_id, event)
+
+        elif action == "TERMINATE_SESSION":
+            # Force disconnect
+            return {
+                "response": "Connection to shophub-prod-01 closed by remote host.\nConnection to shophub-prod-01 closed.",
+                "delay": 0.0,
+                "disconnect": True,
+            }
+
+        # Fallback to realistic response
+        return await self._original_command_handler(session_id, event)

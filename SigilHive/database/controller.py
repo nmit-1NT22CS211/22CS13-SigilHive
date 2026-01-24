@@ -6,6 +6,10 @@ from typing import Dict, Any, List, Optional, Tuple
 from llm_gen import generate_db_response_async
 from kafka_manager import HoneypotKafkaManager
 from file_structure import DATABASES
+from rl_core.q_learning_agent import shared_rl_agent
+from rl_core.state_extractor import extract_state
+from rl_core.reward_calculator import calculate_reward
+from logging.structured_logger import log_interaction
 
 
 class ShopHubDatabase:
@@ -123,14 +127,14 @@ def extract_json_from_text(text: str) -> Optional[Dict]:
     # Strategy 1: Direct parse
     try:
         return json.loads(text)
-    except:
+    except Exception:
         pass
 
     # Strategy 2: Remove markdown code blocks
     cleaned = text.replace("```json", "").replace("```", "").strip()
     try:
         return json.loads(cleaned)
-    except:
+    except Exception:
         pass
 
     # Strategy 3: Find first { to last }
@@ -139,7 +143,7 @@ def extract_json_from_text(text: str) -> Optional[Dict]:
     if start != -1 and end != -1 and end > start:
         try:
             return json.loads(text[start : end + 1])
-        except:
+        except Exception:
             pass
 
     # Strategy 4: Balanced brace extraction
@@ -154,7 +158,7 @@ def extract_json_from_text(text: str) -> Optional[Dict]:
                 if counter == 0:
                     try:
                         return json.loads(text[start : i + 1])
-                    except:
+                    except Exception:
                         break
 
     return None
@@ -169,6 +173,10 @@ class ShopHubDBController:
         self.db_state = ShopHubDatabase()
         self.sessions = {}
         self.kafka_manager = HoneypotKafkaManager()
+
+        self.rl_agent = shared_rl_agent
+        self.rl_enabled = os.getenv("RL_ENABLED", "true").lower() == "true"
+        print(f"[DBController] RL enabled: {self.rl_enabled}")
 
     def _get_session(self, session_id: str) -> Dict[str, Any]:
         if session_id not in self.sessions:
@@ -408,7 +416,7 @@ class ShopHubDBController:
 
         return {"response": response, "delay": delay}
 
-    async def get_action_for_query(
+    async def _original_query_handler(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
         query = event.get("query", "")
@@ -539,11 +547,11 @@ class ShopHubDBController:
                             if isinstance(llm_raw, str):
                                 json_data = extract_json_from_text(llm_raw)
                                 if json_data:
-                                    print(f"[DBController] Extracted JSON successfully")
+                                    print("[DBController] Extracted JSON successfully")
                                     response = json_data
                                 else:
                                     print(
-                                        f"[DBController] Failed to extract JSON, wrapping as text"
+                                        "[DBController] Failed to extract JSON, wrapping as text"
                                     )
                                     response = {
                                         "columns": ["result"],
@@ -564,7 +572,7 @@ class ShopHubDBController:
                                 or "rows" not in response
                             ):
                                 print(
-                                    f"[DBController] Invalid response structure, using fallback"
+                                    "[DBController] Invalid response structure, using fallback"
                                 )
                                 response = {"columns": columns, "rows": []}
 
@@ -634,3 +642,198 @@ class ShopHubDBController:
             fallback,
             delay,
         )
+
+    async def get_action_for_query(
+        self, session_id: str, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """RL-enhanced query handler - wraps original logic"""
+        query = event.get("query", "")
+
+        # 1. Log interaction for RL
+        log_interaction(
+            session_id=session_id,
+            protocol="database",
+            input_data=query,
+            metadata={
+                "intent": self._classify_query(query),
+                "suspicious": self._is_suspicious(query),
+                "current_db": self.db_state.current_db,
+            },
+        )
+
+        # 2. Extract current state
+        state = extract_state(session_id, protocol="database")
+
+        # 3. Select and execute action
+        if self.rl_enabled:
+            rl_action = self.rl_agent.select_action(state)
+            response = await self._execute_rl_action(rl_action, session_id, event)
+        else:
+            response = await self._original_query_handler(session_id, event)
+
+        # 4. Update Q-table
+        if self.rl_enabled:
+            next_state = extract_state(session_id, protocol="database")
+            reward = calculate_reward(state, next_state, protocol="database")
+            self.rl_agent.update(state, rl_action, reward, next_state)
+
+        return response
+
+    async def _execute_rl_action(
+        self, action: str, session_id: str, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute RL-selected action"""
+        query = event.get("query", "")
+        intent = self._classify_query(query)
+
+        if action == "REALISTIC_RESPONSE":
+            # Use existing logic
+            return await self._original_query_handler(session_id, event)
+
+        elif action == "DECEPTIVE_RESOURCE":
+            # Return fake sensitive data with honeytokens
+            query_lower = query.lower()
+
+            # Fake admin/user tables
+            if "user" in query_lower or "admin" in query_lower:
+                fake_users = {
+                    "columns": ["id", "username", "password_hash", "email", "role"],
+                    "rows": [
+                        [
+                            1,
+                            "admin",
+                            "$2b$10$HONEYTOKEN_HASH_001",
+                            "admin@shophub.com",
+                            "superuser",
+                        ],
+                        [
+                            2,
+                            "dbadmin",
+                            "$2b$10$HONEYTOKEN_HASH_002",
+                            "dbadmin@shophub.com",
+                            "admin",
+                        ],
+                        [
+                            3,
+                            "api_user",
+                            "$2b$10$HONEYTOKEN_HASH_003",
+                            "api@shophub.com",
+                            "service",
+                        ],
+                    ],
+                }
+                return await self._finalize_query(
+                    session_id, query, intent, fake_users, 0.1
+                )
+
+            # Fake credit card / payment data
+            if any(
+                keyword in query_lower
+                for keyword in ["credit", "card", "payment", "transaction"]
+            ):
+                fake_payments = {
+                    "columns": ["id", "card_number", "cvv", "expiry", "cardholder"],
+                    "rows": [
+                        [1, "4532-HONEYTOKEN-001-1234", "123", "12/26", "John Doe"],
+                        [2, "5425-HONEYTOKEN-002-5678", "456", "03/27", "Jane Smith"],
+                        [3, "3782-HONEYTOKEN-003-9012", "789", "08/25", "Bob Johnson"],
+                    ],
+                }
+                return await self._finalize_query(
+                    session_id, query, intent, fake_payments, 0.1
+                )
+
+            # Fake API keys / credentials
+            if any(
+                keyword in query_lower
+                for keyword in ["api", "key", "secret", "token", "credential"]
+            ):
+                fake_keys = {
+                    "columns": ["id", "service", "api_key", "secret_key"],
+                    "rows": [
+                        [
+                            1,
+                            "stripe",
+                            "pk_live_HONEYTOKEN_STRIPE_001",
+                            "sk_live_HONEYTOKEN_STRIPE_SECRET",
+                        ],
+                        [
+                            2,
+                            "aws",
+                            "AKIA_HONEYTOKEN_AWS_001",
+                            "wJalrXUtn_HONEYTOKEN_AWS_SECRET",
+                        ],
+                        [3, "sendgrid", "SG.HONEYTOKEN_SENDGRID", None],
+                    ],
+                }
+                return await self._finalize_query(
+                    session_id, query, intent, fake_keys, 0.1
+                )
+
+            # Fallback to realistic if no match
+            return await self._original_query_handler(session_id, event)
+
+        elif action == "RESPONSE_DELAY":
+            # Add delay then return realistic response
+            response = await self._original_query_handler(session_id, event)
+            response["delay"] = response.get("delay", 0.0) + random.uniform(0.5, 2.0)
+            return response
+
+        elif action == "MISLEADING_SUCCESS":
+            # Claim success for operations that should fail
+            if intent in ["write", "create_table", "drop_table", "alter"]:
+                return await self._finalize_query(
+                    session_id, query, intent, "Query OK, 1 row affected", 0.05
+                )
+            return await self._finalize_query(
+                session_id, query, intent, "Query OK, 0 rows affected", 0.05
+            )
+
+        elif action == "FAKE_VULNERABILITY":
+            # Expose fake system tables and sensitive information
+            query_lower = query.lower()
+
+            # Fake information_schema with juicy table names
+            if "information_schema" in query_lower or "show tables" in query_lower:
+                fake_schema = {
+                    "columns": ["table_name"],
+                    "rows": [
+                        ["admin_users"],
+                        ["api_keys"],
+                        ["backup_credentials"],
+                        ["credit_cards"],
+                        ["session_tokens"],
+                        ["user_passwords"],
+                    ],
+                }
+                return await self._finalize_query(
+                    session_id, query, intent, fake_schema, 0.1
+                )
+
+            # Fake mysql.user table
+            if "mysql.user" in query_lower:
+                fake_mysql_users = {
+                    "columns": ["user", "host", "authentication_string"],
+                    "rows": [
+                        ["root", "localhost", "*HONEYTOKEN_MYSQL_ROOT_HASH"],
+                        ["shophub_app", "%", "*HONEYTOKEN_MYSQL_APP_HASH"],
+                        ["backup_user", "10.0.%", "*HONEYTOKEN_MYSQL_BACKUP_HASH"],
+                    ],
+                }
+                return await self._finalize_query(
+                    session_id, query, intent, fake_mysql_users, 0.1
+                )
+
+            # Default: suggest SQL injection worked
+            return await self._original_query_handler(session_id, event)
+
+        elif action == "TERMINATE_SESSION":
+            # Force disconnect
+            return {
+                "response": "ERROR 2013 (HY000): Lost connection to MySQL server during query",
+                "delay": 0.0,
+                "disconnect": True,
+            }
+
+        # Fallback to realistic response
+        return await self._original_query_handler(session_id, event)

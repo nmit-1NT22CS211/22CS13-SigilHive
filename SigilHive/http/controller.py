@@ -1,9 +1,12 @@
-# shophub_controller.py
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from llm_gen import generate_shophub_response_async
 from kafka_manager import HoneypotKafkaManager
 from file_structure import PAGES, PRODUCTS
+from rl_core.q_learning_agent import shared_rl_agent
+from rl_core.state_extractor import extract_state
+from rl_core.reward_calculator import calculate_reward
+from logging.structured_logger import log_interaction
 
 
 def log(message: str):
@@ -18,6 +21,10 @@ class ShopHubState:
         self.pages = PAGES
         self.products = PRODUCTS
         self.api_endpoints = self._initialize_api_endpoints()
+
+        self.rl_agent = shared_rl_agent
+        self.rl_enabled = os.getenv("RL_ENABLED", "true").lower() == "true"
+        log(f"[Controller] ShopHub controller ready (RL enabled: {self.rl_enabled})")
 
     def _initialize_api_endpoints(self) -> dict:
         """Initialize API endpoints"""
@@ -268,7 +275,7 @@ class ShopHubController:
             "delay": delay,
         }
 
-    async def get_action_for_request(
+    async def _original_request_handler(
         self, session_id: str, event: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Main request handler"""
@@ -342,3 +349,389 @@ class ShopHubController:
             body=response_body,
             delay=delay,
         )
+
+    async def get_action_for_request(
+        self, session_id: str, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """RL-enhanced request handler - wraps original logic"""
+        method = event.get("method", "GET")
+        path = event.get("path", "/")
+        headers = event.get("headers", {})
+        body = event.get("body", None)
+
+        # 1. Log interaction for RL
+        log_interaction(
+            session_id=session_id,
+            protocol="http",
+            input_data=f"{method} {path}",
+            metadata={
+                "intent": self._classify_request(method, path, headers),
+                "suspicious": self._is_suspicious(method, path, headers, body),
+                "method": method,
+                "user_agent": headers.get("user-agent", ""),
+            },
+        )
+
+        # 2. Extract current state
+        state = extract_state(session_id, protocol="http")
+
+        # 3. Select and execute action
+        if self.rl_enabled:
+            rl_action = self.rl_agent.select_action(state)
+            response = await self._execute_rl_action(rl_action, session_id, event)
+        else:
+            response = await self._original_request_handler(session_id, event)
+
+        # 4. Update Q-table
+        if self.rl_enabled:
+            next_state = extract_state(session_id, protocol="http")
+            reward = calculate_reward(state, next_state, protocol="http")
+            self.rl_agent.update(state, rl_action, reward, next_state)
+
+        return response
+
+    async def _execute_rl_action(
+        self, action: str, session_id: str, event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute RL-selected action"""
+        method = event.get("method", "GET")
+        path = event.get("path", "/")
+        headers = event.get("headers", {})
+        body = event.get("body", None)
+        intent = self._classify_request(method, path, headers)
+
+        if action == "REALISTIC_RESPONSE":
+            # Use existing logic
+            return await self._original_request_handler(session_id, event)
+
+        elif action == "DECEPTIVE_RESOURCE":
+            # Return fake sensitive resources with honeytokens
+            path_lower = path.lower()
+
+            # Fake admin panel
+            if "/admin" in path_lower:
+                fake_admin_html = """<!DOCTYPE html>
+    <html>
+    <head>
+        <title>ShopHub Admin Dashboard</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+            .container { background: white; padding: 30px; border-radius: 8px; max-width: 800px; margin: 0 auto; }
+            h1 { color: #2c3e50; }
+            .creds { background: #ecf0f1; padding: 15px; margin: 10px 0; border-left: 4px solid #3498db; }
+            .key { font-family: monospace; color: #e74c3c; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔐 ShopHub Admin Dashboard</h1>
+            <h2>System Credentials</h2>
+            
+            <div class="creds">
+                <h3>Database Access</h3>
+                <p>Host: <span class="key">prod-mysql.shophub.internal</span></p>
+                <p>User: <span class="key">admin_HONEYTOKEN_001</span></p>
+                <p>Pass: <span class="key">Adm1nP@ss_HONEYTOKEN_DB_001</span></p>
+            </div>
+            
+            <div class="creds">
+                <h3>API Keys</h3>
+                <p>Stripe Secret: <span class="key">sk_live_HONEYTOKEN_STRIPE_SECRET_001</span></p>
+                <p>AWS Access Key: <span class="key">AKIA_HONEYTOKEN_AWS_KEY_001</span></p>
+                <p>AWS Secret: <span class="key">wJalrXUtn_HONEYTOKEN_AWS_SECRET</span></p>
+            </div>
+            
+            <div class="creds">
+                <h3>SSH Access</h3>
+                <p>Host: <span class="key">prod-server.shophub.com</span></p>
+                <p>User: <span class="key">deploy</span></p>
+                <p>Key: <span class="key">/admin/.ssh/deploy_key_HONEYTOKEN</span></p>
+            </div>
+        </div>
+    </body>
+    </html>"""
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {
+                        "Content-Type": "text/html",
+                        "Server": "nginx/1.18.0",
+                        "X-Admin": "true",
+                    },
+                    fake_admin_html,
+                    0.1,
+                )
+
+            # Fake .env file
+            if ".env" in path_lower:
+                fake_env = """# ShopHub Production Environment
+    NODE_ENV=production
+    PORT=3000
+
+    # Database
+    DB_HOST=prod-mysql.internal
+    DB_USER=shophub_prod_HONEYTOKEN_001
+    DB_PASS=Pr0dP@ssw0rd_HONEYTOKEN_ENV_001
+    DB_NAME=shophub_production
+
+    # Redis
+    REDIS_HOST=prod-redis.internal
+    REDIS_PASS=R3d1sP@ss_HONEYTOKEN_002
+
+    # AWS Credentials
+    AWS_ACCESS_KEY_ID=AKIA_HONEYTOKEN_AWS_KEY_002
+    AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI_HONEYTOKEN_AWS_003
+
+    # Stripe
+    STRIPE_SECRET_KEY=sk_live_HONEYTOKEN_STRIPE_004
+    STRIPE_WEBHOOK_SECRET=whsec_HONEYTOKEN_STRIPE_WEBHOOK
+
+    # JWT
+    JWT_SECRET=jwt_super_secret_key_HONEYTOKEN_005
+    SESSION_SECRET=session_secret_HONEYTOKEN_006
+
+    # Email
+    SENDGRID_API_KEY=SG.HONEYTOKEN_SENDGRID_007"""
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "text/plain", "Server": "nginx/1.18.0"},
+                    fake_env,
+                    0.1,
+                )
+
+            # Fake .git/config
+            if "/.git" in path_lower and "config" in path_lower:
+                fake_git_config = """[core]
+        repositoryformatversion = 0
+        filemode = true
+        bare = false
+        logallrefupdates = true
+    [remote "origin"]
+        url = https://deploy_HONEYTOKEN:ghp_HONEYTOKEN_GITHUB_PAT_001@github.com/shophub/production.git
+        fetch = +refs/heads/*:refs/remotes/origin/*
+    [branch "main"]
+        remote = origin
+        merge = refs/heads/main
+    [user]
+        name = ShopHub Deploy
+        email = deploy@shophub.com"""
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "text/plain", "Server": "nginx/1.18.0"},
+                    fake_git_config,
+                    0.1,
+                )
+
+            # Fake API keys endpoint
+            if "/api/keys" in path_lower or "/api/config" in path_lower:
+                fake_api_keys = {
+                    "stripe": {
+                        "public_key": "pk_live_HONEYTOKEN_STRIPE_PUBLIC",
+                        "secret_key": "sk_live_HONEYTOKEN_STRIPE_SECRET_008",
+                    },
+                    "aws": {
+                        "access_key_id": "AKIA_HONEYTOKEN_AWS_009",
+                        "secret_access_key": "wJalrXUtnFEMI_HONEYTOKEN_010",
+                    },
+                    "sendgrid": {"api_key": "SG.HONEYTOKEN_SENDGRID_011"},
+                    "jwt_secret": "jwt_secret_HONEYTOKEN_012",
+                }
+                import json
+
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "application/json", "Server": "nginx/1.18.0"},
+                    json.dumps(fake_api_keys, indent=2),
+                    0.1,
+                )
+
+            # Fake backup files
+            if "/backup" in path_lower or ".sql" in path_lower or ".dump" in path_lower:
+                fake_backup = """-- ShopHub Database Backup
+    -- Generated: 2025-01-15 10:30:00
+    -- 
+    -- Admin Credentials:
+    -- Username: admin_HONEYTOKEN, Password: B@ckup_P@ss_HONEYTOKEN_013
+    -- 
+    USE shophub_production;
+
+    INSERT INTO admin_users (id, username, password_hash, email, role) VALUES
+    (1, 'admin', '$2b$10$HONEYTOKEN_HASH_ADMIN_001', 'admin@shophub.com', 'superadmin'),
+    (2, 'dbadmin', '$2b$10$HONEYTOKEN_HASH_DBADMIN_002', 'dbadmin@shophub.com', 'admin');
+
+    -- API Keys Table
+    INSERT INTO api_keys (service, key_value) VALUES
+    ('stripe', 'sk_live_HONEYTOKEN_BACKUP_014'),
+    ('aws', 'AKIA_HONEYTOKEN_BACKUP_015');"""
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {
+                        "Content-Type": "text/plain",
+                        "Server": "nginx/1.18.0",
+                        "Content-Disposition": "attachment; filename=backup.sql",
+                    },
+                    fake_backup,
+                    0.1,
+                )
+
+            # Fallback to realistic if no match
+            return await self._original_request_handler(session_id, event)
+
+        elif action == "RESPONSE_DELAY":
+            # Add delay then return realistic response
+            response = await self._original_request_handler(session_id, event)
+            response["delay"] = response.get("delay", 0.0) + random.uniform(0.5, 2.0)
+            return response
+
+        elif action == "MISLEADING_SUCCESS":
+            # Return 200 OK for unauthorized/suspicious requests
+            path_lower = path.lower()
+
+            # Admin access without auth
+            if "/admin" in path_lower:
+                fake_success = """<!DOCTYPE html>
+    <html><head><title>Admin Panel</title></head>
+    <body><h1>Admin Panel</h1><p>Access granted. Loading dashboard...</p></body>
+    </html>"""
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "text/html", "Server": "nginx/1.18.0"},
+                    fake_success,
+                    0.05,
+                )
+
+            # API requests succeed
+            if "/api/" in path_lower:
+                fake_api_success = {
+                    "success": True,
+                    "message": "Operation completed successfully",
+                }
+                import json
+
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "application/json", "Server": "nginx/1.18.0"},
+                    json.dumps(fake_api_success),
+                    0.05,
+                )
+
+            # Generic success
+            response = await self._original_request_handler(session_id, event)
+            response["status_code"] = 200
+            return response
+
+        elif action == "FAKE_VULNERABILITY":
+            # Expose fake vulnerabilities
+            path_lower = path.lower()
+
+            # Fake directory listing
+            if any(
+                x in path_lower for x in ["/config", "/backup", "/data", "/uploads"]
+            ):
+                fake_listing = """<!DOCTYPE html>
+    <html>
+    <head><title>Index of {path}</title></head>
+    <body>
+    <h1>Index of {path}</h1>
+    <ul>
+    <li><a href="database_backup.sql">database_backup.sql</a> - 2.4 MB</li>
+    <li><a href="credentials.txt">credentials.txt</a> - 1.2 KB</li>
+    <li><a href="api_keys.json">api_keys.json</a> - 892 bytes</li>
+    <li><a href=".env">.env</a> - 1.5 KB</li>
+    <li><a href="ssh_keys/">ssh_keys/</a></li>
+    </ul>
+    </body>
+    </html>""".format(path=path)
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "text/html", "Server": "nginx/1.18.0"},
+                    fake_listing,
+                    0.1,
+                )
+
+            # Exposed .git directory
+            if "/.git" in path_lower:
+                fake_git_head = "ref: refs/heads/main"
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "text/plain", "Server": "nginx/1.18.0"},
+                    fake_git_head,
+                    0.1,
+                )
+
+            # SQL injection "success"
+            if any(x in path_lower for x in ["' or", "union select", "1=1"]):
+                fake_sql_result = """<!DOCTYPE html>
+    <html><body>
+    <h2>Search Results</h2>
+    <p>Found 1 administrator account:</p>
+    <pre>
+    Username: admin
+    Email: admin@shophub.com
+    Role: superadmin
+    </pre>
+    </body></html>"""
+                return await self._finalize_request(
+                    session_id,
+                    method,
+                    path,
+                    intent,
+                    200,
+                    {"Content-Type": "text/html", "Server": "nginx/1.18.0"},
+                    fake_sql_result,
+                    0.1,
+                )
+
+            return await self._original_request_handler(session_id, event)
+
+        elif action == "TERMINATE_SESSION":
+            # Force disconnect
+            return {
+                "status_code": 403,
+                "headers": {
+                    "Content-Type": "text/html",
+                    "Server": "nginx/1.18.0",
+                    "Connection": "close",
+                },
+                "body": "<!DOCTYPE html><html><body><h1>403 Forbidden</h1><p>Access denied.</p></body></html>",
+                "delay": 0.0,
+                "disconnect": True,
+            }
+
+        # Fallback to realistic response
+        return await self._original_request_handler(session_id, event)

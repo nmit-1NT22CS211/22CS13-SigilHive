@@ -1,3 +1,5 @@
+import os
+import random
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from llm_gen import generate_shophub_response_async
@@ -6,7 +8,7 @@ from file_structure import PAGES, PRODUCTS
 from rl_core.q_learning_agent import shared_rl_agent
 from rl_core.state_extractor import extract_state
 from rl_core.reward_calculator import calculate_reward
-from logging.structured_logger import log_interaction
+from rl_core.logging.structured_logger import log_interaction
 
 
 def log(message: str):
@@ -95,6 +97,8 @@ class ShopHubController:
         self.state = ShopHubState()
         self.sessions = {}
         self.kafka_manager = HoneypotKafkaManager()
+        self.rl_agent = shared_rl_agent
+        self.rl_enabled = os.getenv("RL_ENABLED", "true").lower() == "true"
         log("[Controller] ShopHub controller ready")
 
     def _get_session(self, session_id: str) -> Dict[str, Any]:
@@ -376,14 +380,18 @@ class ShopHubController:
         state = extract_state(session_id, protocol="http")
 
         # 3. Select and execute action
-        if self.rl_enabled:
+        rl_action = None
+        if self.rl_enabled and method.upper() == "GET":
+            # For GET requests, always use realistic response (no RL)
+            response = await self._original_request_handler(session_id, event)
+        elif self.rl_enabled:
             rl_action = self.rl_agent.select_action(state)
             response = await self._execute_rl_action(rl_action, session_id, event)
         else:
             response = await self._original_request_handler(session_id, event)
 
-        # 4. Update Q-table
-        if self.rl_enabled:
+        # 4. Update Q-table (only if RL action was taken)
+        if self.rl_enabled and rl_action is not None:
             next_state = extract_state(session_id, protocol="http")
             reward = calculate_reward(state, next_state, protocol="http")
             self.rl_agent.update(state, rl_action, reward, next_state)

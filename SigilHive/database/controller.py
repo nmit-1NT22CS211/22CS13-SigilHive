@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import numpy as np
@@ -9,7 +10,7 @@ from file_structure import DATABASES
 from rl_core.q_learning_agent import shared_rl_agent
 from rl_core.state_extractor import extract_state
 from rl_core.reward_calculator import calculate_reward
-from logging.structured_logger import log_interaction
+from rl_core.logging.structured_logger import log_interaction
 
 
 class ShopHubDatabase:
@@ -665,14 +666,18 @@ class ShopHubDBController:
         state = extract_state(session_id, protocol="database")
 
         # 3. Select and execute action
-        if self.rl_enabled:
+        rl_action = None
+        if self.rl_enabled and event.get("query", "").upper().startswith(("SHOW", "SELECT")):
+            # For read queries, always use realistic response (no RL)
+            response = await self._original_query_handler(session_id, event)
+        elif self.rl_enabled:
             rl_action = self.rl_agent.select_action(state)
             response = await self._execute_rl_action(rl_action, session_id, event)
         else:
             response = await self._original_query_handler(session_id, event)
 
-        # 4. Update Q-table
-        if self.rl_enabled:
+        # 4. Update Q-table (only if RL action was taken)
+        if self.rl_enabled and rl_action is not None:
             next_state = extract_state(session_id, protocol="database")
             reward = calculate_reward(state, next_state, protocol="database")
             self.rl_agent.update(state, rl_action, reward, next_state)
@@ -776,18 +781,17 @@ class ShopHubDBController:
         elif action == "RESPONSE_DELAY":
             # Add delay then return realistic response
             response = await self._original_query_handler(session_id, event)
-            response["delay"] = response.get("delay", 0.0) + random.uniform(0.5, 2.0)
+            response["delay"] = response.get("delay", 0.0) + float(np.random.uniform(0.5, 2.0))
             return response
 
         elif action == "MISLEADING_SUCCESS":
-            # Claim success for operations that should fail
+            # Claim success for operations that should fail (only for write operations)
             if intent in ["write", "create_table", "drop_table", "alter"]:
                 return await self._finalize_query(
                     session_id, query, intent, "Query OK, 1 row affected", 0.05
                 )
-            return await self._finalize_query(
-                session_id, query, intent, "Query OK, 0 rows affected", 0.05
-            )
+            # For read operations, fall back to realistic response
+            return await self._original_query_handler(session_id, event)
 
         elif action == "FAKE_VULNERABILITY":
             # Expose fake system tables and sensitive information

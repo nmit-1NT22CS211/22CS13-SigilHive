@@ -1,6 +1,8 @@
 services:
   ssh_honeypot:
-    build: ./ssh_server
+    build:
+      context: .
+      dockerfile: ./ssh_server/Dockerfile
     container_name: ssh_honeypot
     restart: unless-stopped
     ports:
@@ -16,7 +18,9 @@ services:
         condition: service_healthy
 
   http_honeypot:
-    build: ./http
+    build:
+      context: .
+      dockerfile: ./http/Dockerfile
     container_name: http_honeypot
     restart: unless-stopped
     ports:
@@ -33,7 +37,9 @@ services:
         condition: service_healthy
 
   db_honeypot:
-    build: ./database
+    build:
+      context: .
+      dockerfile: ./database/Dockerfile
     container_name: db_honeypot
     restart: unless-stopped
     ports:

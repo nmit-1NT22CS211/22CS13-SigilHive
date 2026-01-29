@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import time
 import random
@@ -9,7 +10,7 @@ from file_structure import SHOPHUB_STRUCTURE, FILE_CONTENTS
 from rl_core.q_learning_agent import shared_rl_agent
 from rl_core.state_extractor import extract_state
 from rl_core.reward_calculator import calculate_reward
-from logging.structured_logger import log_interaction
+from rl_core.logging.structured_logger import log_interaction
 
 
 class Controller:
@@ -428,14 +429,18 @@ class Controller:
         state = extract_state(session_id, protocol="ssh")
 
         # 3. Select and execute action
-        if self.rl_enabled:
+        rl_action = None
+        if self.rl_enabled and self.classify_command(cmd) in ["list_dir", "cat_file", "show_env"]:
+            # For read commands, always use realistic response (no RL)
+            response = await self._original_command_handler(session_id, event)
+        elif self.rl_enabled:
             rl_action = self.rl_agent.select_action(state)
             response = await self._execute_rl_action(rl_action, session_id, event)
         else:
             response = await self._original_command_handler(session_id, event)
 
-        # 4. Update Q-table
-        if self.rl_enabled:
+        # 4. Update Q-table (only if RL action was taken)
+        if self.rl_enabled and rl_action is not None:
             next_state = extract_state(session_id, protocol="ssh")
             reward = calculate_reward(state, next_state, protocol="ssh")
             self.rl_agent.update(state, rl_action, reward, next_state)

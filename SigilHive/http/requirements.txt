@@ -5,3 +5,6 @@ python-dotenv
 uvloop
 aiofiles
 confluent_kafka
+numpy
+pandas
+requests

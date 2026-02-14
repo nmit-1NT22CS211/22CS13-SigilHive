@@ -8,22 +8,51 @@ No hardcoded values should exist elsewhere.
 import os
 
 # ==============================================================================
-# Q-LEARNING HYPERPARAMETERS
+# ENHANCED Q-LEARNING HYPERPARAMETERS
 # ==============================================================================
 
 RL_CONFIG = {
     # Learning parameters
     "learning_rate": 0.1,  # α - How much to update Q-values (0.0 to 1.0)
+    "learning_rate_min": 0.01,  # Minimum learning rate
+    "learning_rate_decay": 0.9999,  # Decay rate per update
     "discount_factor": 0.95,  # γ - Importance of future rewards (0.0 to 1.0)
+    
     # Exploration parameters
     "epsilon_start": 1.0,  # Initial exploration rate (100% random)
     "epsilon_min": 0.01,  # Minimum exploration rate (1% random)
     "epsilon_decay": 0.9995,  # Decay rate per action
+    
+    # Experience replay (prioritized)
+    "replay_capacity": 10000,  # Maximum buffer size
+    "replay_alpha": 0.6,  # Prioritization exponent (0=uniform, 1=full)
+    "replay_beta_start": 0.4,  # Importance sampling exponent
+    "replay_beta_frames": 100000,  # Frames to reach beta=1.0
+    "batch_size": 32,  # Training batch size
+    "replay_start_size": 1000,  # Minimum buffer size before training
+    
+    # N-step returns
+    "n_step": 3,  # For multi-step Q-learning
+    
+    # Adaptive learning
+    "adaptive_learning_rate": True,  # Enable adaptive LR based on state visits
+    
     # Persistence
-    "q_table_path": "storage/q_table.pkl",
-    "save_interval": 100,  # Save Q-table every N updates
-    # Default Q-value for unseen states
+    "checkpoint_interval": 500,  # Save checkpoint every N updates
+    "checkpoint_dir": "storage/rl_checkpoints",
+    
+    # Default Q-value for unseen states (legacy)
     "default_q_value": 0.0,
+    
+    # Actions
+    "actions": [
+        "REALISTIC_RESPONSE",
+        "DECEPTIVE_RESOURCE",
+        "RESPONSE_DELAY",
+        "MISLEADING_SUCCESS",
+        "FAKE_VULNERABILITY",
+        "TERMINATE_SESSION",
+    ],
 }
 
 

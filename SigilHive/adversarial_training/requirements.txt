@@ -1,0 +1,10 @@
+langgraph
+google-genai
+python-dotenv
+kafka-python
+requests
+numpy
+pandas
+pydantic
+paramiko
+pymysql

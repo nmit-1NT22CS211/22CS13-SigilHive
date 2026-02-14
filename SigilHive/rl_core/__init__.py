@@ -1,6 +1,6 @@
 from .config import RL_CONFIG, REWARD_CONFIG, STATE_BUCKETS, PROTOCOL_SETTINGS
 from .action_dispatcher import ACTIONS, get_action_description, validate_action
-from .q_learning_agent import QLearningAgent, shared_rl_agent
+from .q_learning_agent import QLearningAgent, PrioritizedReplayBuffer, Experience, shared_rl_agent
 from .state_extractor import extract_state
 from .reward_calculator import calculate_reward
 
@@ -14,8 +14,10 @@ __all__ = [
     "ACTIONS",
     "get_action_description",
     "validate_action",
-    # Q-Learning Agent
+    # Q-Learning Agent (Enhanced)
     "QLearningAgent",
+    "PrioritizedReplayBuffer",
+    "Experience",
     "shared_rl_agent",
     # State & Reward
     "extract_state",
@@ -23,5 +25,6 @@ __all__ = [
 ]
 
 # Version info
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "SigilHive Security Team"
+__description__ = "Enhanced Q-Learning with Double Q-tables, Prioritized Replay, and N-step Returns"

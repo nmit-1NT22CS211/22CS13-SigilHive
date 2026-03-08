@@ -1,0 +1,42 @@
+{
+  "cycle_id": "cycle_0003_1772963337",
+  "started_at": 1772963337.4710512,
+  "finished_at": 1772963403.8057575,
+  "duration_s": 66.33,
+  "overall_suspicion": 0.57,
+  "total_data_extracted": 47726,
+  "reward": 53.107,
+  "evolution_triggered": true,
+  "evolution_reason": "suspicion 0.57 \u2265 0.4; data 47726B \u2265 1024B",
+  "evolution_changes": [
+    "Expose /admin with HONEYTOKEN_DB_001 credential display",
+    "Serve /.git/config with fake ghp_HONEYTOKEN GitHub PAT",
+    "Rotate hostname banner shophub-prod-01 \u2192 shophub-prod-02"
+  ],
+  "campaigns": [
+    {
+      "protocol": "ssh",
+      "recon_ok": false,
+      "exploit_ok": false,
+      "total_data_b": 0,
+      "peak_suspicion": 0.13,
+      "aborted": false
+    },
+    {
+      "protocol": "http",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 47726,
+      "peak_suspicion": 0.28,
+      "aborted": false
+    },
+    {
+      "protocol": "database",
+      "recon_ok": false,
+      "exploit_ok": false,
+      "total_data_b": 0,
+      "peak_suspicion": 0.16,
+      "aborted": false
+    }
+  ]
+}

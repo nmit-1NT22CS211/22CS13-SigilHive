@@ -1,0 +1,44 @@
+{
+  "cycle_id": "cycle_0001_1772963940",
+  "started_at": 1772963940.1424205,
+  "finished_at": 1772964022.2409632,
+  "duration_s": 82.1,
+  "overall_suspicion": 0.91,
+  "total_data_extracted": 47445,
+  "reward": 45.833,
+  "evolution_triggered": true,
+  "evolution_reason": "suspicion 0.91 \u2265 0.4; data 47445B \u2265 1024B; 2 exploits \u2265 2",
+  "evolution_changes": [
+    "Plant JWT_SECRET honeytoken in /.env (DECEPTIVE_RESOURCE path)",
+    "Populate /backup/database.sql with fake admin credentials inside",
+    "Insert fake credit_cards rows with HONEYTOKEN card numbers",
+    "Add mysql.user HONEYTOKEN entries: root, backup_user",
+    "Rotate hostname banner shophub-prod-01 \u2192 shophub-prod-02"
+  ],
+  "campaigns": [
+    {
+      "protocol": "ssh",
+      "recon_ok": false,
+      "exploit_ok": false,
+      "total_data_b": 0,
+      "peak_suspicion": 0.13,
+      "aborted": false
+    },
+    {
+      "protocol": "http",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 47232,
+      "peak_suspicion": 0.28,
+      "aborted": false
+    },
+    {
+      "protocol": "database",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 213,
+      "peak_suspicion": 0.5,
+      "aborted": false
+    }
+  ]
+}

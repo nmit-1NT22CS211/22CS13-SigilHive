@@ -1,0 +1,44 @@
+{
+  "cycle_id": "cycle_0002_1772964364",
+  "started_at": 1772964364.2111325,
+  "finished_at": 1772964428.4551091,
+  "duration_s": 64.24,
+  "overall_suspicion": 0.76,
+  "total_data_extracted": 48911,
+  "reward": 44.563,
+  "evolution_triggered": true,
+  "evolution_reason": "suspicion 0.76 \u2265 0.4; data 48911B \u2265 1024B; 2 exploits \u2265 2",
+  "evolution_changes": [
+    "Inject HONEYTOKEN values into ~/.env: DB_PASS, AWS_ACCESS_KEY_ID",
+    "Create fake /etc/sudoers NOPASSWD: /bin/bash entry (FAKE_VULNERABILITY)",
+    "Plant JWT_SECRET honeytoken in /.env (DECEPTIVE_RESOURCE path)",
+    "Serve /.git/config with fake ghp_HONEYTOKEN GitHub PAT",
+    "Rotate hostname banner shophub-prod-01 \u2192 shophub-prod-02"
+  ],
+  "campaigns": [
+    {
+      "protocol": "ssh",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 979,
+      "peak_suspicion": 0.36,
+      "aborted": false
+    },
+    {
+      "protocol": "http",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 47726,
+      "peak_suspicion": 0.28,
+      "aborted": false
+    },
+    {
+      "protocol": "database",
+      "recon_ok": true,
+      "exploit_ok": false,
+      "total_data_b": 206,
+      "peak_suspicion": 0.12,
+      "aborted": true
+    }
+  ]
+}

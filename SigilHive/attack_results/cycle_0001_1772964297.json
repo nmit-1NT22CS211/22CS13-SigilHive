@@ -1,0 +1,44 @@
+{
+  "cycle_id": "cycle_0001_1772964297",
+  "started_at": 1772964297.917273,
+  "finished_at": 1772964361.9896202,
+  "duration_s": 64.07,
+  "overall_suspicion": 0.76,
+  "total_data_extracted": 48999,
+  "reward": 44.737,
+  "evolution_triggered": true,
+  "evolution_reason": "suspicion 0.76 \u2265 0.4; data 48999B \u2265 1024B; 2 exploits \u2265 2",
+  "evolution_changes": [
+    "Inject HONEYTOKEN values into ~/.env: DB_PASS, AWS_ACCESS_KEY_ID",
+    "Add /opt/secrets/stripe_secret.key honeytoken file",
+    "Plant JWT_SECRET honeytoken in /.env (DECEPTIVE_RESOURCE path)",
+    "Serve /.git/config with fake ghp_HONEYTOKEN GitHub PAT",
+    "Rotate hostname banner shophub-prod-01 \u2192 shophub-prod-02"
+  ],
+  "campaigns": [
+    {
+      "protocol": "ssh",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 1157,
+      "peak_suspicion": 0.36,
+      "aborted": false
+    },
+    {
+      "protocol": "http",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 47726,
+      "peak_suspicion": 0.28,
+      "aborted": false
+    },
+    {
+      "protocol": "database",
+      "recon_ok": true,
+      "exploit_ok": false,
+      "total_data_b": 116,
+      "peak_suspicion": 0.12,
+      "aborted": true
+    }
+  ]
+}

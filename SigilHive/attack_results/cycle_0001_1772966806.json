@@ -1,0 +1,85 @@
+{
+  "cycle_id": "cycle_0001_1772966806",
+  "episode": 1,
+  "started_at": 1772966806.4563463,
+  "finished_at": 1772966881.129049,
+  "duration_s": 74.67,
+  "attack_plan": "Okay, initiating attack cycle #1 against localhost.\n\n**Attack Strategy:** We'll start with reconnaissance on each service (SSH, HTTP, DB) to identify potential vulnerabilities and gather information. Then, we'll attempt exploits tailored to the identified weaknesses, prioritizing those with a high likelihood of triggering honeytokens. We'll monitor the overall suspicion level and abort if it exceeds the threshold.\n\n**Expected Findings:**\n*   **SSH:** Usernames, software versions, weak password attempts, command injection attempts.\n*   **HTTP:** Exposed .env files, admin panels, git repositories, backup files.\n*   **Database:** Default credentials, SQL injection points, exposed tables.\n\n**Risk Considerations:** Prematurely triggering all honeytokens, high suspicion leading to early detection and campaign termination.",
+  "evaluation_summary": "The HTTP and database protocols yielded the most valuable intelligence due to the high volume of data extracted and identified tables. The attacker looked for `.env` files, `.git/config`, and the `admin` path, indicating common web application attack vectors. The database reconnaissance revealed sensitive table names like `credit_cards` and `api_keys`, suggesting a high-value target. The overall suspicion level of 0.7731 indicates moderate evasion effectiveness. The filesystem should evolve to include more realistic `.env` files and potentially a fake `.git/config` to further entice attackers and gather more intel.",
+  "overall_suspicion": 0.7731,
+  "total_data_bytes": 38919,
+  "reward": 46.352,
+  "evolution_triggered": true,
+  "evolution_reason": "The attacker searched for .env files, so planting a honeytoken there is likely to be effective.",
+  "evolution_changes": [
+    "Plant JWT_SECRET honeytoken in /.env (DECEPTIVE_RESOURCE path)"
+  ],
+  "results": {
+    "ssh_recon": {
+      "protocol": "ssh",
+      "attack_type": "recon",
+      "success": true,
+      "data_extracted": 15,
+      "suspicion_delta": 0.08,
+      "duration": 3.7,
+      "responses": [
+        "$ w\n",
+        "$ hostname\n",
+        "$ df -h\n"
+      ]
+    },
+    "ssh_exploit": {
+      "protocol": "ssh",
+      "attack_type": "exploit",
+      "success": true,
+      "data_extracted": 1950,
+      "suspicion_delta": 0.28,
+      "duration": 4.466,
+      "responses": [
+        "$ cat ~/.env\n",
+        "$ sudo -l\n",
+        "$ ls -la ~/.ssh/\ncat: ~/.env: No such file or directory"
+      ]
+    },
+    "http_recon": {
+      "protocol": "http",
+      "attack_type": "recon",
+      "success": true,
+      "data_extracted": 12757,
+      "suspicion_delta": 0.06,
+      "duration": 16.282,
+      "responses": [
+        "GET /robots.txt \u2192 200",
+        "GET /about \u2192 200",
+        "GET / \u2192 200"
+      ]
+    },
+    "http_exploit": {
+      "protocol": "http",
+      "attack_type": "exploit",
+      "success": true,
+      "data_extracted": 23787,
+      "suspicion_delta": 0.22,
+      "duration": 37.373,
+      "responses": [
+        "GET /.env \u2192 404",
+        "GET /.git/config \u2192 404",
+        "GET /admin \u2192 200"
+      ]
+    },
+    "db_recon": {
+      "protocol": "database",
+      "attack_type": "recon",
+      "success": true,
+      "data_extracted": 410,
+      "suspicion_delta": 0.1331,
+      "duration": 1.195,
+      "responses": [
+        "SHOW DATABASES \u2192 shophub, mysql, information_schema",
+        "USE shophub \u2192 Database changed",
+        "SHOW TABLES \u2192 users, products, orders, admin_users, api_keys, credit_cards"
+      ]
+    },
+    "db_exploit": null
+  }
+}

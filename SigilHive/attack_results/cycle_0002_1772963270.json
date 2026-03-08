@@ -1,0 +1,42 @@
+{
+  "cycle_id": "cycle_0002_1772963270",
+  "started_at": 1772963270.2075884,
+  "finished_at": 1772963335.3363948,
+  "duration_s": 65.13,
+  "overall_suspicion": 0.57,
+  "total_data_extracted": 47726,
+  "reward": 53.107,
+  "evolution_triggered": true,
+  "evolution_reason": "suspicion 0.57 \u2265 0.4; data 47726B \u2265 1024B",
+  "evolution_changes": [
+    "Populate /backup/database.sql with fake admin credentials inside",
+    "Expose /admin with HONEYTOKEN_DB_001 credential display",
+    "Update ShopHub version banner v2.3.1 \u2192 v2.4.0"
+  ],
+  "campaigns": [
+    {
+      "protocol": "ssh",
+      "recon_ok": false,
+      "exploit_ok": false,
+      "total_data_b": 0,
+      "peak_suspicion": 0.13,
+      "aborted": false
+    },
+    {
+      "protocol": "http",
+      "recon_ok": true,
+      "exploit_ok": true,
+      "total_data_b": 47726,
+      "peak_suspicion": 0.28,
+      "aborted": false
+    },
+    {
+      "protocol": "database",
+      "recon_ok": false,
+      "exploit_ok": false,
+      "total_data_b": 0,
+      "peak_suspicion": 0.16,
+      "aborted": false
+    }
+  ]
+}

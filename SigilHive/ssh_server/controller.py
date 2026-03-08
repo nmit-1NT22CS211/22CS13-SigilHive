@@ -208,6 +208,8 @@ class Controller:
                     "intent": intent,
                     "current_dir": current_dir,
                 },
+                service="ssh",
+                event_type=intent,
             )
         except Exception as e:
             print(f"[controller] kafka error in finalize: {e}")

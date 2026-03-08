@@ -197,11 +197,11 @@ class DoubleQLearningAgent:
     """
     Double Q-Learning agent for honeypot evolution decisions.
 
-    Actions = EvolutionStrategy enum values
+    Actions = Strategy placeholders (evolution disabled)
     State = HoneypotState (discretized to key)
     """
 
-    ACTIONS = [s.value for s in EvolutionStrategy]
+    ACTIONS = ["hold", "adapt", "reinforce"]  # Placeholder actions
 
     def __init__(
         self,
@@ -528,8 +528,8 @@ class TrainingIntegration:
                 sum(self._session_rewards[-20:]) / len(self._session_rewards[-20:])
                 if self._session_rewards else 0.0
             ),
-            "evolution_applied": evolution_record is not None,
-            "evolution_strategy": evolution_record.strategy.value if evolution_record else None,
+            "evolution_applied": False,  # Evolution disabled
+            "evolution_strategy": None,  # Evolution disabled
         }
 
         self._log_session_step(metrics)

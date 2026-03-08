@@ -161,7 +161,6 @@ class SigilHiveAdversarialTraining:
         self.training_system = LangGraphTrainingSystem(
             adversarial_agent=self.adversarial_agent,
             training_integration=self.training_integration,
-            file_evolver=self.file_evolver,
         )
         logger.info("✓ LangGraph training system initialized")
 

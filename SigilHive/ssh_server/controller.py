@@ -208,6 +208,8 @@ class Controller:
                     "intent": intent,
                     "current_dir": current_dir,
                 },
+                service="ssh",
+                event_type=intent,
             )
         except Exception as e:
             print(f"[controller] kafka error in finalize: {e}")
@@ -275,8 +277,10 @@ class Controller:
 
         elif intent == "show_history":
             hist = meta.get("command_history", [])
-            numbered = "\n".join(f"  {i+1}  {c}" for i, c in enumerate(hist[-20:]))
-            return await self._finalize(session_id, cmd, intent, current_dir, numbered, 0.1)
+            numbered = "\n".join(f"  {i + 1}  {c}" for i, c in enumerate(hist[-20:]))
+            return await self._finalize(
+                session_id, cmd, intent, current_dir, numbered, 0.1
+            )
 
         elif intent == "echo":
             text = cmd[4:].strip() if len(cmd) > 4 else ""
@@ -291,7 +295,9 @@ NODE_ENV=production
 PORT=3000
 DB_HOST=prod-mysql.internal
 REDIS_HOST=prod-redis.internal"""
-            return await self._finalize(session_id, cmd, intent, current_dir, env_vars, 0.1)
+            return await self._finalize(
+                session_id, cmd, intent, current_dir, env_vars, 0.1
+            )
 
         elif intent == "read_file_no_arg":
             base_cmd = cmd.split()[0] if cmd.split() else "cat"
@@ -370,7 +376,9 @@ REDIS_HOST=prod-redis.internal"""
                 full_path = "/home/shophub"
             elif full_path.startswith("~/"):
                 full_path = "/home/shophub/" + full_path[2:]
-            return await self._finalize(session_id, cmd, intent, current_dir, full_path, 0.05)
+            return await self._finalize(
+                session_id, cmd, intent, current_dir, full_path, 0.05
+            )
 
         elif intent == "docker":
             return await self._finalize(
@@ -442,7 +450,7 @@ REDIS_HOST=prod-redis.internal"""
 
         # Try to find file in FILE_CONTENTS
         file_path_key = self._find_file_case_insensitive(current_dir, filename)
-        
+
         # If file exists in FILE_CONTENTS, return that content
         if file_path_key:
             content = self.file_contents[file_path_key]
@@ -451,8 +459,10 @@ REDIS_HOST=prod-redis.internal"""
             )
 
         # File exists in directory but not in FILE_CONTENTS - generate content with LLM
-        print(f"[Controller] File '{filename}' exists in directory but not in FILE_CONTENTS, generating content with LLM")
-        
+        print(
+            f"[Controller] File '{filename}' exists in directory but not in FILE_CONTENTS, generating content with LLM"
+        )
+
         llm_response = await generate_response_for_command_async(
             command=cmd,
             filename_hint=filename,
@@ -460,7 +470,7 @@ REDIS_HOST=prod-redis.internal"""
             context=context,
             force_refresh=False,
         )
-        
+
         return await self._finalize(
             session_id, cmd, intent, current_dir, llm_response, 0.1
         )
@@ -480,7 +490,9 @@ REDIS_HOST=prod-redis.internal"""
         contents = dir_context.get("contents", [])
 
         if not contents:
-            return await self._finalize(session_id, cmd, "list_dir", current_dir, "", 0.05)
+            return await self._finalize(
+                session_id, cmd, "list_dir", current_dir, "", 0.05
+            )
 
         if "-la" in cmd or "-al" in cmd or "-l" in cmd:
             listing_parts = []
@@ -504,7 +516,9 @@ REDIS_HOST=prod-redis.internal"""
                     size = "4096"
 
                 date_str = "Jan 15 10:30"
-                listing_parts.append(f"{perm} 1 shophub shophub {size:>8} {date_str} {item}")
+                listing_parts.append(
+                    f"{perm} 1 shophub shophub {size:>8} {date_str} {item}"
+                )
 
             listing = "\n".join(listing_parts)
             return await self._finalize(

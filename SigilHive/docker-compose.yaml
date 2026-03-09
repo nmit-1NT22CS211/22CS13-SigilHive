@@ -76,6 +76,23 @@ services:
       sigilhive_kafka:
         condition: service_healthy
 
+  sequential_attacker:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: sequential_attacker
+    env_file:
+      - .env
+    environment:
+      TARGET_HOST: host.docker.internal
+    depends_on:
+      ssh_honeypot:
+        condition: service_started
+      http_honeypot:
+        condition: service_started
+      db_honeypot:
+        condition: service_started
+
   sigilhive_kafka:
     image: confluentinc/cp-kafka:7.8.3
     container_name: kafka
@@ -107,4 +124,5 @@ volumes:
   ssh_cache:
   http_cache:
   db_cache:
+  adv_training_cache:
   kafka_kraft: {}

@@ -1,0 +1,142 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Kafka — KRaft mode (no ZooKeeper)
+#  Mirrors docker-compose sigilhive_kafka service exactly.
+#
+#  Two Services are needed:
+#    kafka        → headless (for StatefulSet DNS: kafka-0.kafka.sigilhive...)
+#    kafka-svc    → ClusterIP (stable DNS for honeypot pods: kafka-svc:9092)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Headless Service (StatefulSet DNS) ───────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: sigilhive
+  labels:
+    app: kafka
+spec:
+  clusterIP: None       # headless
+  selector:
+    app: kafka
+  ports:
+    - name: broker
+      port: 9092
+      targetPort: 9092
+    - name: controller
+      port: 9093
+      targetPort: 9093
+
+---
+# ── ClusterIP Service (stable DNS for all other pods) ────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-svc
+  namespace: sigilhive
+  labels:
+    app: kafka
+spec:
+  type: ClusterIP
+  selector:
+    app: kafka
+  ports:
+    - name: broker
+      port: 9092
+      targetPort: 9092
+
+---
+# ── StatefulSet ───────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: sigilhive
+  labels:
+    app: kafka
+spec:
+  serviceName: kafka      # must match headless Service name above
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.8.3
+          ports:
+            - containerPort: 9092
+              name: broker
+            - containerPort: 9093
+              name: controller
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            # Advertise via the stable ClusterIP service name
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka-svc:9092"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            # KRaft quorum voter — pod 0 of the StatefulSet
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@kafka-0.kafka.sigilhive.svc.cluster.local:9093"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data"
+            - name: CLUSTER_ID
+              value: "WmV3Z3hOQkFNRVV3TURBd0xUQTJNVEV3TWp"
+          readinessProbe:
+            exec:
+              command:
+                - kafka-broker-api-versions
+                - --bootstrap-server
+                - localhost:9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command:
+                - kafka-broker-api-versions
+                - --bootstrap-server
+                - localhost:9092
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 5
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+
+  # Persistent volume — GKE standard-rwo is SSD-backed in asia-south1
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard-rwo
+        resources:
+          requests:
+            storage: 10Gi

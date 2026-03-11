@@ -1,0 +1,314 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  SigilHive — Honeypot Deployments + LoadBalancer Services + Attacker Job
+#
+#  IMAGE_REGISTRY and IMAGE_TAG are placeholder strings replaced by CI via sed
+#  before kubectl apply.
+#
+#  Exposed ports (external LoadBalancers):
+#    5555  → SSH  honeypot
+#    8080  → HTTP honeypot
+#    2225  → MySQL/DB honeypot
+# ─────────────────────────────────────────────────────────────────────────────
+
+##############################################################################
+# SSH HONEYPOT
+##############################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssh-honeypot
+  namespace: sigilhive
+  labels:
+    app: ssh-honeypot
+    component: honeypot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ssh-honeypot
+  template:
+    metadata:
+      labels:
+        app: ssh-honeypot
+    spec:
+      # Wait for Kafka before starting — avoids startup race condition
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-svc 9092; do
+                echo "waiting for kafka-svc:9092..."
+                sleep 3
+              done
+              echo "Kafka is up!"
+      containers:
+        - name: ssh-honeypot
+          # Built from SigilHive/ssh_server/Dockerfile
+          # Context = SigilHive/ so kafka_manager.py, file_structure.py, rl_core/ are available
+          image: IMAGE_REGISTRY/ssh_honeypot:IMAGE_TAG
+          ports:
+            - containerPort: 5555
+              name: ssh
+          env:
+            - name: PORT
+              value: "5555"
+            - name: KAFKA_BROKER
+              value: "kafka-svc:9092"
+            - name: RL_ENABLED
+              value: "true"
+          # All .env values (GEMINI_API_KEY, Grafana creds, SSH creds, etc.)
+          envFrom:
+            - secretRef:
+                name: sigilhive-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+          volumeMounts:
+            - name: ssh-cache
+              mountPath: /app/cache
+      volumes:
+        - name: ssh-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssh-honeypot-svc
+  namespace: sigilhive
+  labels:
+    app: ssh-honeypot
+  annotations:
+    # L4 Network LB — preserves raw TCP, required for SSH and MySQL
+    networking.gke.io/load-balancer-type: "External"
+spec:
+  type: LoadBalancer
+  selector:
+    app: ssh-honeypot
+  ports:
+    - name: ssh
+      port: 5555
+      targetPort: 5555
+      protocol: TCP
+
+
+##############################################################################
+# HTTP HONEYPOT
+##############################################################################
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-honeypot
+  namespace: sigilhive
+  labels:
+    app: http-honeypot
+    component: honeypot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: http-honeypot
+  template:
+    metadata:
+      labels:
+        app: http-honeypot
+    spec:
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-svc 9092; do
+                echo "waiting for kafka-svc:9092..."
+                sleep 3
+              done
+              echo "Kafka is up!"
+      containers:
+        - name: http-honeypot
+          # Built from SigilHive/http/Dockerfile
+          image: IMAGE_REGISTRY/http_honeypot:IMAGE_TAG
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: KAFKA_BROKER
+              value: "kafka-svc:9092"
+            - name: RL_ENABLED
+              value: "true"
+          envFrom:
+            - secretRef:
+                name: sigilhive-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+          volumeMounts:
+            - name: http-cache
+              mountPath: /app/cache
+      volumes:
+        - name: http-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-honeypot-svc
+  namespace: sigilhive
+  labels:
+    app: http-honeypot
+  annotations:
+    networking.gke.io/load-balancer-type: "External"
+spec:
+  type: LoadBalancer
+  selector:
+    app: http-honeypot
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+
+
+##############################################################################
+# DATABASE (MySQL) HONEYPOT
+##############################################################################
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-honeypot
+  namespace: sigilhive
+  labels:
+    app: db-honeypot
+    component: honeypot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-honeypot
+  template:
+    metadata:
+      labels:
+        app: db-honeypot
+    spec:
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-svc 9092; do
+                echo "waiting for kafka-svc:9092..."
+                sleep 3
+              done
+              echo "Kafka is up!"
+      containers:
+        - name: db-honeypot
+          # Built from SigilHive/database/Dockerfile
+          image: IMAGE_REGISTRY/db_honeypot:IMAGE_TAG
+          ports:
+            - containerPort: 3306
+              name: mysql
+          env:
+            - name: MYSQL_PORT
+              value: "3306"
+            - name: KAFKA_BROKER
+              value: "kafka-svc:9092"
+            - name: REQUIRE_PASSWORD
+              value: "true"
+            - name: RL_ENABLED
+              value: "true"
+          envFrom:
+            - secretRef:
+                name: sigilhive-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+          volumeMounts:
+            - name: db-cache
+              mountPath: /app/cache
+      volumes:
+        - name: db-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-honeypot-svc
+  namespace: sigilhive
+  labels:
+    app: db-honeypot
+  annotations:
+    networking.gke.io/load-balancer-type: "External"
+spec:
+  type: LoadBalancer
+  selector:
+    app: db-honeypot
+  ports:
+    - name: mysql
+      # External port 2225 maps to internal 3306 — matches docker-compose
+      port: 2225
+      targetPort: 3306
+      protocol: TCP
+
+
+##############################################################################
+# SEQUENTIAL ATTACKER  (one-shot Job — runs after LBs are provisioned)
+##############################################################################
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sequential-attacker
+  namespace: sigilhive
+  labels:
+    app: sequential-attacker
+    component: testing
+spec:
+  # Auto-delete the completed Job after 5 minutes
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Give LoadBalancers time to receive external IPs before attacking
+        - name: wait-for-lbs
+          image: busybox:1.36
+          command: ['sh', '-c', 'echo "Waiting 90s for LoadBalancer IPs..."; sleep 90']
+      containers:
+        - name: sequential-attacker
+          # Built from SigilHive/Dockerfile (sequential_attack_runner.py)
+          image: IMAGE_REGISTRY/sequential_attacker:IMAGE_TAG
+          env:
+            # Attacker targets internal service DNS — no external IP needed
+            - name: TARGET_HOST
+              value: "ssh-honeypot-svc"
+            - name: KAFKA_BROKER
+              value: "kafka-svc:9092"
+          envFrom:
+            - secretRef:
+                name: sigilhive-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "100m"

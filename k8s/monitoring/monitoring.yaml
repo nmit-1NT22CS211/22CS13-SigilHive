@@ -1,0 +1,116 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Monitoring — Grafana Connector + Metrics Collector
+#  Both consume from Kafka topic "honeypot-logs" and push to Grafana Cloud.
+# ─────────────────────────────────────────────────────────────────────────────
+
+##############################################################################
+# GRAFANA CONNECTOR
+# Reads from Kafka → pushes to Grafana Loki (log streaming)
+##############################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana-connector
+  namespace: sigilhive
+  labels:
+    app: grafana-connector
+    component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana-connector
+  template:
+    metadata:
+      labels:
+        app: grafana-connector
+    spec:
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-svc 9092; do
+                echo "waiting for kafka-svc:9092..."
+                sleep 3
+              done
+              echo "Kafka is up!"
+      containers:
+        - name: grafana-connector
+          # Built from SigilHive/grafana_connector/Dockerfile
+          image: IMAGE_REGISTRY/grafana_connector:IMAGE_TAG
+          env:
+            - name: KAFKA_BROKER
+              value: "kafka-svc:9092"
+            - name: KAFKA_TOPIC
+              value: "honeypot-logs"
+          # Loki credentials (LOKI_URL, LOKI_USERNAME, GRAFANA_DOCKER_API)
+          # come from the sigilhive-secrets Kubernetes Secret
+          envFrom:
+            - secretRef:
+                name: sigilhive-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "100m"
+
+
+##############################################################################
+# METRICS COLLECTOR
+# Reads from Kafka → aggregates metrics → pushes to Grafana Cloud (Prometheus)
+##############################################################################
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-collector
+  namespace: sigilhive
+  labels:
+    app: metrics-collector
+    component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics-collector
+  template:
+    metadata:
+      labels:
+        app: metrics-collector
+    spec:
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-svc 9092; do
+                echo "waiting for kafka-svc:9092..."
+                sleep 3
+              done
+              echo "Kafka is up!"
+      containers:
+        - name: metrics-collector
+          # Built from SigilHive/metrics_collector/Dockerfile
+          image: IMAGE_REGISTRY/metrics_collector:IMAGE_TAG
+          env:
+            - name: KAFKA_BROKER
+              value: "kafka-svc:9092"
+            - name: KAFKA_TOPIC
+              value: "honeypot-logs"
+          envFrom:
+            - secretRef:
+                name: sigilhive-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "100m"

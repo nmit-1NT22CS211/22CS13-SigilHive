@@ -1,0 +1,223 @@
+name: SigilHive — Build & Deploy to GKE
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:          # allow manual trigger from GitHub UI
+
+# ── Global env vars used across all jobs ─────────────────────────────────────
+env:
+  PROJECT_ID:  ${{ secrets.GCP_PROJECT_ID }}
+  CLUSTER:     sigilhive-cluster
+  ZONE:        asia-south1-a
+  REGION:      asia-south1
+  REGISTRY:    asia-south1-docker.pkg.dev
+  AR_REPO:     sigilhive          # Artifact Registry repository name
+  NAMESPACE:   sigilhive
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── 1. LINT ─────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint Kubernetes Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate k8s manifests
+        uses: azure/k8s-lint@v1
+        with:
+          manifests: |
+            k8s/**/*.yaml
+
+  # ── 2. BUILD & PUSH ─────────────────────────────────────────────────────────
+  build:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: lint
+    # Only push images on real commits, not on PR checks
+    if: github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+      id-token: write     # Required for Workload Identity Federation
+
+    outputs:
+      image_tag: ${{ steps.tag.outputs.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless GCP auth — no JSON key stored in GitHub
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account:            ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker → Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+
+      # Use first 8 chars of commit SHA as the image tag
+      - name: Compute image tag
+        id: tag
+        run: echo "sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      # ── Docker build helper — reuse across all images ─────────────────────
+      # Real repo layout:
+      #   22CS13-SigilHive/
+      #     SigilHive/               ← monorepo root (shared files live here)
+      #       ssh_server/Dockerfile
+      #       http/Dockerfile
+      #       database/Dockerfile
+      #       grafana_connector/Dockerfile
+      #       metrics_collector/Dockerfile
+      #       Dockerfile               ← sequential_attacker
+      #       kafka_manager.py         ← shared
+      #       file_structure.py        ← shared
+      #       rl_core/                 ← shared
+      # ─────────────────────────────────────────────────────────────────────
+
+      - name: Build & push — ssh_honeypot
+        uses: docker/build-push-action@v5
+        with:
+          # Build context = SigilHive/ so shared files (kafka_manager.py, etc.) are in scope
+          context: SigilHive
+          file:    SigilHive/ssh_server/Dockerfile
+          push:    true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/ssh_honeypot:${{ steps.tag.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/ssh_honeypot:latest
+
+      - name: Build & push — http_honeypot
+        uses: docker/build-push-action@v5
+        with:
+          context: SigilHive
+          file:    SigilHive/http/Dockerfile
+          push:    true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/http_honeypot:${{ steps.tag.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/http_honeypot:latest
+
+      - name: Build & push — db_honeypot
+        uses: docker/build-push-action@v5
+        with:
+          context: SigilHive
+          file:    SigilHive/database/Dockerfile
+          push:    true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/db_honeypot:${{ steps.tag.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/db_honeypot:latest
+
+      - name: Build & push — grafana_connector
+        uses: docker/build-push-action@v5
+        with:
+          context: SigilHive/grafana_connector
+          file:    SigilHive/grafana_connector/Dockerfile
+          push:    true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/grafana_connector:${{ steps.tag.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/grafana_connector:latest
+
+      - name: Build & push — metrics_collector
+        uses: docker/build-push-action@v5
+        with:
+          context: SigilHive/metrics_collector
+          file:    SigilHive/metrics_collector/Dockerfile
+          push:    true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/metrics_collector:${{ steps.tag.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/metrics_collector:latest
+
+      - name: Build & push — sequential_attacker
+        uses: docker/build-push-action@v5
+        with:
+          context: SigilHive
+          file:    SigilHive/Dockerfile
+          push:    true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/sequential_attacker:${{ steps.tag.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/sequential_attacker:latest
+
+  # ── 3. DEPLOY ───────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to GKE
+    runs-on: ubuntu-latest
+    needs: build
+    # Only deploy on pushes to main, never on PRs
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account:            ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          location:     ${{ env.ZONE }}
+
+      # Replace IMAGE_TAG and IMAGE_REGISTRY placeholders in all manifests
+      - name: Inject image tag into manifests
+        run: |
+          TAG=${{ needs.build.outputs.image_tag }}
+          REGISTRY=${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}
+          find k8s -name "*.yaml" -exec sed -i \
+            "s|IMAGE_TAG|${TAG}|g; s|IMAGE_REGISTRY|${REGISTRY}|g" {} +
+          echo "Manifests updated with tag: ${TAG}"
+
+      - name: Apply namespace
+        run: kubectl apply -f k8s/base/namespace.yaml
+
+      - name: Deploy Kafka
+        run: kubectl apply -f k8s/kafka/ -n ${{ env.NAMESPACE }}
+
+      - name: Wait for Kafka to be Ready
+        run: |
+          kubectl rollout status statefulset/kafka \
+            -n ${{ env.NAMESPACE }} --timeout=180s
+
+      - name: Deploy Honeypots
+        run: kubectl apply -f k8s/honeypots/ -n ${{ env.NAMESPACE }}
+
+      - name: Deploy Monitoring
+        run: kubectl apply -f k8s/monitoring/ -n ${{ env.NAMESPACE }}
+
+      - name: Wait for all Deployments
+        run: |
+          for dep in ssh-honeypot http-honeypot db-honeypot \
+                     grafana-connector metrics-collector; do
+            echo "Waiting for: $dep"
+            kubectl rollout status deployment/${dep} \
+              -n ${{ env.NAMESPACE }} --timeout=120s
+          done
+
+      - name: Print external LoadBalancer IPs
+        run: |
+          echo ""
+          echo "════════════════════════════════════════"
+          echo "  SigilHive Honeypot External Endpoints"
+          echo "════════════════════════════════════════"
+          kubectl get svc -n ${{ env.NAMESPACE }} \
+            --field-selector spec.type=LoadBalancer \
+            -o custom-columns=\
+'NAME:.metadata.name,EXTERNAL-IP:.status.loadBalancer.ingress[0].ip,PORT:.spec.ports[*].port'
+          echo "════════════════════════════════════════"

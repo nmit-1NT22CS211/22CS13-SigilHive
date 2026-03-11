@@ -19,7 +19,7 @@
 set -euo pipefail
 
 # ── EDIT THESE TWO LINES ──────────────────────────────────────────────────────
-GITHUB_ORG="YOUR_GITHUB_ORG"       # your GitHub username or org  e.g. "myorg"
+GITHUB_ORG="nmit-1NT22CS161"       # your GitHub username or org  e.g. "myorg"
 GITHUB_REPO="22CS13-SigilHive"     # your repository name exactly as it appears on GitHub
 # ─────────────────────────────────────────────────────────────────────────────
 

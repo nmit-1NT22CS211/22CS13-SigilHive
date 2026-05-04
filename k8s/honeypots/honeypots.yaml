@@ -6,7 +6,7 @@
 #
 #  Exposed ports (external LoadBalancers):
 #    5555  → SSH  honeypot
-#    8080  → HTTP honeypot
+#    8443  → HTTPS honeypot
 #    2225  → MySQL/DB honeypot
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -137,8 +137,8 @@ spec:
           # Built from SigilHive/http/Dockerfile
           image: IMAGE_REGISTRY/http_honeypot:IMAGE_TAG
           ports:
-            - containerPort: 8080
-              name: http
+            - containerPort: 8443
+              name: https
           env:
             - name: KAFKA_BROKER
               value: "kafka-svc:9092"
@@ -175,9 +175,9 @@ spec:
   selector:
     app: http-honeypot
   ports:
-    - name: http
-      port: 8080
-      targetPort: 8080
+    - name: https
+      port: 8443
+      targetPort: 8443
       protocol: TCP
 
 
